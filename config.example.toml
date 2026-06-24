@@ -9,6 +9,15 @@ path = "data/unpopularr.db"
 interval_seconds = 21600
 run_on_startup = true
 
+# Optional. Tautulli must already be monitoring the Plex server.
+[playback]
+id = "plex-main"
+provider = "tautulli"
+base_url = "http://tautulli:8181"
+api_key_env = "TAUTULLI_API_KEY"
+interval_seconds = 21600
+run_on_startup = true
+
 [[instances]]
 id = "radarr-hd"
 name = "Radarr HD"
