@@ -3,7 +3,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures::{StreamExt, TryStreamExt, stream};
@@ -34,7 +34,7 @@ impl TautulliClient {
             .redirect(Policy::none())
             .user_agent(concat!("unpopularr/", env!("CARGO_PKG_VERSION")))
             .build()
-            .map_err(|_| anyhow!("failed to create Tautulli HTTP client"))?;
+            .context("failed to create Tautulli HTTP client")?;
         Ok(Self { client })
     }
 
@@ -151,13 +151,9 @@ impl PlaybackSourceClient for TautulliClient {
             .filter_map(|entry| entry.lookup_key)
             .collect::<HashSet<_>>();
         let metadata = stream::iter(lookup_keys)
-            .map(|lookup_key| {
-                let client = self.clone();
-                let source = source.clone();
-                async move {
-                    let metadata = client.metadata(&source, lookup_key.rating_key).await?;
-                    Ok::<_, anyhow::Error>((lookup_key, metadata.content_key(lookup_key.kind)))
-                }
+            .map(|lookup_key| async move {
+                let metadata = self.metadata(source, lookup_key.rating_key).await?;
+                Ok::<_, anyhow::Error>((lookup_key, metadata.content_key(lookup_key.kind)))
             })
             .buffer_unordered(MAX_CONCURRENT_METADATA_REQUESTS)
             .try_collect::<HashMap<_, _>>()
