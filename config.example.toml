@@ -1,0 +1,39 @@
+[server]
+# Bind to a trusted interface. There is no built-in API authentication.
+bind = "127.0.0.1:3000"
+
+[database]
+path = "data/unpopularr.db"
+
+[sync]
+interval_seconds = 21600
+run_on_startup = true
+
+[[instances]]
+id = "radarr-hd"
+name = "Radarr HD"
+kind = "radarr"
+# This URL must reach the API directly, without an authentication redirect.
+base_url = "http://radarr:7878"
+api_key_env = "RADARR_HD_API_KEY"
+
+[[instances]]
+id = "radarr-4k"
+name = "Radarr 4K"
+kind = "radarr"
+base_url = "http://radarr-4k:7878"
+api_key_env = "RADARR_4K_API_KEY"
+
+[[instances]]
+id = "sonarr-hd"
+name = "Sonarr HD"
+kind = "sonarr"
+base_url = "http://sonarr:8989"
+api_key_env = "SONARR_HD_API_KEY"
+
+[[instances]]
+id = "lidarr"
+name = "Lidarr"
+kind = "lidarr"
+base_url = "http://lidarr:8686"
+api_key_env = "LIDARR_API_KEY"
