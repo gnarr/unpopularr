@@ -76,7 +76,9 @@ POST /api/v1/sync
 ```
 
 Returns `202 Accepted` with the running sync record. If a sync is already
-running, returns `409 Conflict` with that record.
+running, returns `409 Conflict` with that record when available. If the request
+races with creation of the sync record, the response is
+`{"error":"a sync is already running"}`.
 
 ### Get sync status
 

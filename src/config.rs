@@ -101,18 +101,28 @@ impl AppConfig {
     }
 
     pub fn load_from(path: impl AsRef<Path>) -> Result<Self> {
+        Self::load_from_with_env(path, |name| env::var(name))
+    }
+
+    fn load_from_with_env(
+        path: impl AsRef<Path>,
+        get_env: impl Fn(&str) -> Result<String, env::VarError>,
+    ) -> Result<Self> {
         let path = path.as_ref();
         let contents = fs::read_to_string(path)
             .with_context(|| format!("failed to read configuration from {}", path.display()))?;
         let raw: RawConfig = toml::from_str(&contents)
             .with_context(|| format!("failed to parse configuration from {}", path.display()))?;
 
-        raw.validate()
+        raw.validate(&get_env)
     }
 }
 
 impl RawConfig {
-    fn validate(self) -> Result<AppConfig> {
+    fn validate(
+        self,
+        get_env: &impl Fn(&str) -> Result<String, env::VarError>,
+    ) -> Result<AppConfig> {
         if self.instances.is_empty() {
             bail!("configuration must contain at least one [[instances]] entry");
         }
@@ -150,7 +160,7 @@ impl RawConfig {
                 bail!("instance {} api_key_env must not be empty", raw.id);
             }
 
-            let api_key = env::var(&raw.api_key_env).with_context(|| {
+            let api_key = get_env(&raw.api_key_env).with_context(|| {
                 format!(
                     "environment variable {} referenced by instance {} is not set",
                     raw.api_key_env, raw.id
@@ -209,7 +219,7 @@ fn validate_identifier(id: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::{env, fs};
+    use std::fs;
 
     use tempfile::tempdir;
 
@@ -235,11 +245,11 @@ api_key_env = "UNPOPULARR_TEST_RADARR_KEY"
         )
         .expect("write config");
 
-        // SAFETY: this unit test does not spawn threads that access this variable.
-        unsafe { env::set_var("UNPOPULARR_TEST_RADARR_KEY", "secret") };
-        let config = AppConfig::load_from(path).expect("valid config");
-        // SAFETY: this unit test does not spawn threads that access this variable.
-        unsafe { env::remove_var("UNPOPULARR_TEST_RADARR_KEY") };
+        let config = AppConfig::load_from_with_env(path, |name| {
+            assert_eq!(name, "UNPOPULARR_TEST_RADARR_KEY");
+            Ok("secret".to_owned())
+        })
+        .expect("valid config");
 
         assert_eq!(
             config.instances[0].base_url.as_str(),

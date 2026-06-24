@@ -102,8 +102,23 @@ async fn start_background_sync(sync_service: &SyncService, trigger: SyncTrigger)
 }
 
 async fn shutdown_signal() {
-    if let Err(error) = signal::ctrl_c().await {
+    #[cfg(unix)]
+    let result = tokio::select! {
+        result = signal::ctrl_c() => result,
+        result = terminate_signal() => result,
+    };
+    #[cfg(not(unix))]
+    let result = signal::ctrl_c().await;
+
+    if let Err(error) = result {
         warn!(error = %error, "failed to install shutdown signal handler");
     }
     info!("shutdown signal received");
+}
+
+#[cfg(unix)]
+async fn terminate_signal() -> std::io::Result<()> {
+    let mut signal = signal::unix::signal(signal::unix::SignalKind::terminate())?;
+    signal.recv().await;
+    Ok(())
 }
