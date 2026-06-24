@@ -16,6 +16,33 @@ pub struct CatalogSources {
     pub movies: Vec<MovieSource>,
     pub series: Vec<SeriesSource>,
     pub artists: Vec<ArtistSource>,
+    pub playback: CatalogPlayback,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct CatalogPlayback {
+    pub available: bool,
+    pub movies: BTreeMap<i64, PlaybackMetrics>,
+    pub series: BTreeMap<i64, PlaybackMetrics>,
+    pub artists: BTreeMap<String, PlaybackMetrics>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaybackMetrics {
+    pub play_count: i64,
+    pub play_duration_seconds: i64,
+    pub last_played_at: Option<DateTime<Utc>>,
+}
+
+impl PlaybackMetrics {
+    fn never_played() -> Self {
+        Self {
+            play_count: 0,
+            play_duration_seconds: 0,
+            last_played_at: None,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -66,6 +93,7 @@ pub enum ContentItem {
         instances: Vec<InstanceReference>,
         tmdb_id: i64,
         year: i64,
+        playback: Option<PlaybackMetrics>,
     },
     Series {
         display_name: String,
@@ -75,6 +103,7 @@ pub enum ContentItem {
         tvdb_id: i64,
         year: i64,
         seasons_with_files: i64,
+        playback: Option<PlaybackMetrics>,
     },
     Artist {
         display_name: String,
@@ -83,6 +112,7 @@ pub enum ContentItem {
         instances: Vec<InstanceReference>,
         music_brainz_id: String,
         albums_with_files: i64,
+        playback: Option<PlaybackMetrics>,
     },
 }
 
@@ -118,6 +148,7 @@ pub fn aggregate(mut sources: CatalogSources) -> Vec<ContentItem> {
     sources.movies.sort_by_key(|source| source.config_order);
     sources.series.sort_by_key(|source| source.config_order);
     sources.artists.sort_by_key(|source| source.config_order);
+    let playback = sources.playback;
 
     let mut movies = BTreeMap::<i64, MovieAggregate>::new();
     for source in sources.movies {
@@ -187,6 +218,7 @@ pub fn aggregate(mut sources: CatalogSources) -> Vec<ContentItem> {
             instances: movie.instances,
             tmdb_id,
             year: movie.year,
+            playback: playback_metrics(playback.available, playback.movies.get(&tmdb_id)),
         })
     }));
     content.extend(series.into_iter().filter_map(|(tvdb_id, series)| {
@@ -198,9 +230,11 @@ pub fn aggregate(mut sources: CatalogSources) -> Vec<ContentItem> {
             tvdb_id,
             year: series.year,
             seasons_with_files: i64::try_from(series.season_numbers.len()).unwrap_or(i64::MAX),
+            playback: playback_metrics(playback.available, playback.series.get(&tvdb_id)),
         })
     }));
     content.extend(artists.into_iter().filter_map(|(music_brainz_id, artist)| {
+        let metrics = playback_metrics(playback.available, playback.artists.get(&music_brainz_id));
         (artist.file_count > 0).then_some(ContentItem::Artist {
             display_name: artist.name,
             size_on_disk_bytes: artist.size_on_disk_bytes,
@@ -209,6 +243,7 @@ pub fn aggregate(mut sources: CatalogSources) -> Vec<ContentItem> {
             music_brainz_id,
             albums_with_files: i64::try_from(artist.album_musicbrainz_ids.len())
                 .unwrap_or(i64::MAX),
+            playback: metrics,
         })
     }));
 
@@ -220,6 +255,14 @@ pub fn aggregate(mut sources: CatalogSources) -> Vec<ContentItem> {
         )
     });
     content
+}
+
+fn playback_metrics(available: bool, metrics: Option<&PlaybackMetrics>) -> Option<PlaybackMetrics> {
+    available.then(|| {
+        metrics
+            .cloned()
+            .unwrap_or_else(PlaybackMetrics::never_played)
+    })
 }
 
 struct MovieAggregate {
@@ -249,11 +292,13 @@ struct ArtistAggregate {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use chrono::Utc;
 
     use super::{
-        ArtistSource, CatalogSources, ContentItem, InstanceReference, MovieSource, SeriesSource,
-        aggregate,
+        ArtistSource, CatalogPlayback, CatalogSources, ContentItem, InstanceReference, MovieSource,
+        PlaybackMetrics, SeriesSource, aggregate,
     };
 
     fn instance(id: &str, name: &str) -> InstanceReference {
@@ -361,6 +406,7 @@ mod tests {
                     config_order: 1,
                 },
             ],
+            playback: CatalogPlayback::default(),
         });
 
         assert_eq!(content.len(), 2);
@@ -375,6 +421,67 @@ mod tests {
             &content[1],
             ContentItem::Series {
                 seasons_with_files: 3,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn distinguishes_unavailable_never_played_and_played_content() {
+        let movie = MovieSource {
+            tmdb_id: 10,
+            title: "Movie".to_owned(),
+            year: 2024,
+            size_on_disk_bytes: 100,
+            file_count: 1,
+            instance: instance("one", "One"),
+            config_order: 0,
+        };
+        let unavailable = aggregate(CatalogSources {
+            movies: vec![movie.clone()],
+            ..CatalogSources::default()
+        });
+        assert!(matches!(
+            &unavailable[0],
+            ContentItem::Movie { playback: None, .. }
+        ));
+
+        let never_played = aggregate(CatalogSources {
+            movies: vec![movie.clone()],
+            playback: CatalogPlayback {
+                available: true,
+                ..CatalogPlayback::default()
+            },
+            ..CatalogSources::default()
+        });
+        assert!(matches!(
+            &never_played[0],
+            ContentItem::Movie {
+                playback: Some(PlaybackMetrics { play_count: 0, .. }),
+                ..
+            }
+        ));
+
+        let played = aggregate(CatalogSources {
+            movies: vec![movie],
+            playback: CatalogPlayback {
+                available: true,
+                movies: BTreeMap::from([(
+                    10,
+                    PlaybackMetrics {
+                        play_count: 3,
+                        play_duration_seconds: 600,
+                        last_played_at: None,
+                    },
+                )]),
+                ..CatalogPlayback::default()
+            },
+            ..CatalogSources::default()
+        });
+        assert!(matches!(
+            &played[0],
+            ContentItem::Movie {
+                playback: Some(PlaybackMetrics { play_count: 3, .. }),
                 ..
             }
         ));

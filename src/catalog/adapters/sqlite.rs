@@ -6,7 +6,8 @@ use chrono::{DateTime, Utc};
 use sqlx::{Row, SqlitePool};
 
 use crate::catalog::{
-    ArtistSource, CatalogRepository, CatalogSources, InstanceReference, MovieSource, SeriesSource,
+    ArtistSource, CatalogPlayback, CatalogRepository, CatalogSources, InstanceReference,
+    MovieSource, PlaybackMetrics, SeriesSource,
 };
 
 #[derive(Clone)]
@@ -150,10 +151,70 @@ impl CatalogRepository for SqliteCatalogRepository {
             })
             .collect::<Result<Vec<_>>>()?;
 
+        let playback_available = sqlx::query_scalar::<_, bool>(
+            r#"
+            SELECT EXISTS(
+                SELECT 1
+                FROM playback_sources
+                WHERE last_successful_sync_at IS NOT NULL
+            )
+            "#,
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        let mut playback = CatalogPlayback {
+            available: playback_available,
+            ..CatalogPlayback::default()
+        };
+        if playback_available {
+            let rows = sqlx::query(
+                r#"
+                SELECT content_type, content_id, play_count, play_duration_seconds,
+                       last_played_at
+                FROM playback_snapshots
+                "#,
+            )
+            .fetch_all(&self.pool)
+            .await?;
+            for row in rows {
+                let metrics = PlaybackMetrics {
+                    play_count: row.try_get("play_count")?,
+                    play_duration_seconds: row.try_get("play_duration_seconds")?,
+                    last_played_at: row.try_get("last_played_at")?,
+                };
+                let content_id: String = row.try_get("content_id")?;
+                match row.try_get::<String, _>("content_type")?.as_str() {
+                    "movie" => {
+                        playback.movies.insert(
+                            content_id.parse().with_context(|| {
+                                format!("invalid movie playback ID {content_id}")
+                            })?,
+                            metrics,
+                        );
+                    }
+                    "series" => {
+                        playback.series.insert(
+                            content_id.parse().with_context(|| {
+                                format!("invalid series playback ID {content_id}")
+                            })?,
+                            metrics,
+                        );
+                    }
+                    "artist" => {
+                        playback.artists.insert(content_id, metrics);
+                    }
+                    content_type => {
+                        anyhow::bail!("unknown playback content type in database: {content_type}");
+                    }
+                }
+            }
+        }
+
         Ok(CatalogSources {
             movies,
             series,
             artists,
+            playback,
         })
     }
 }

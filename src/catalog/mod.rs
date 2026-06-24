@@ -5,7 +5,7 @@ mod ports;
 
 pub use application::CatalogService;
 pub use domain::{
-    ArtistSource, CatalogSources, ContentItem, InstanceReference, MovieSource, SeriesSource,
-    aggregate,
+    ArtistSource, CatalogPlayback, CatalogSources, ContentItem, InstanceReference, MovieSource,
+    PlaybackMetrics, SeriesSource, aggregate,
 };
 pub use ports::CatalogRepository;
