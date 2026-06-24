@@ -1,0 +1,33 @@
+[package]
+name = "unpopularr"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+description = "Self-hosted media library analytics backend"
+license = "MIT"
+
+[dependencies]
+anyhow = "1.0"
+async-trait = "0.1"
+axum = "0.8"
+chrono = { version = "0.4", features = ["serde"] }
+futures = "0.3"
+reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls"] }
+serde = { version = "1.0", features = ["derive"] }
+sqlx = { version = "0.9", features = ["chrono", "runtime-tokio", "sqlite"] }
+tokio = { version = "1.49", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+toml = "1.1"
+tower-http = { version = "0.6", features = ["trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = { version = "2.5", features = ["serde"] }
+
+[dev-dependencies]
+serde_json = "1.0"
+tempfile = "3.27"
+tower = { version = "0.5", features = ["util"] }
+wiremock = "0.6"
+
+[profile.release]
+lto = "thin"
+strip = true
