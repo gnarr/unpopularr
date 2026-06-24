@@ -12,8 +12,8 @@ use reqwest::{
     header::{CONTENT_TYPE, LOCATION},
     redirect::Policy,
 };
-use serde::Deserialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Deserializer};
 
 use crate::playback::{
     ContentKey, PlaybackAggregate, PlaybackSnapshot, PlaybackSource, PlaybackSourceClient,
@@ -88,6 +88,10 @@ impl TautulliClient {
     where
         T: DeserializeOwned,
     {
+        let command = query
+            .iter()
+            .find_map(|(name, value)| (*name == "cmd").then_some(value.as_str()))
+            .unwrap_or("unknown command");
         let url = endpoint(&source.base_url)?;
         let response = self
             .client
@@ -96,7 +100,7 @@ impl TautulliClient {
             .query(query)
             .send()
             .await
-            .map_err(|_| anyhow!("Tautulli request failed"))?;
+            .map_err(|error| request_error(&source.base_url, &error))?;
 
         let status = response.status();
         if status.is_redirection() {
@@ -133,12 +137,12 @@ impl TautulliClient {
             .await
             .map_err(|_| anyhow!("Tautulli response could not be read"))?;
         let envelope: ApiEnvelope<serde_json::Value> = serde_json::from_slice(&body)
-            .map_err(|_| anyhow!("Tautulli returned an invalid response"))?;
+            .map_err(|error| anyhow!("Tautulli {command} response envelope is invalid: {error}"))?;
         if envelope.response.result != "success" {
             bail!("Tautulli API request failed");
         }
         serde_json::from_value(envelope.response.data)
-            .map_err(|_| anyhow!("Tautulli returned an invalid response"))
+            .map_err(|error| anyhow!("Tautulli {command} response data is invalid: {error}"))
     }
 }
 
@@ -208,6 +212,25 @@ fn endpoint(base_url: &Url) -> Result<Url> {
         .map_err(|_| anyhow!("failed to build Tautulli API URL"))
 }
 
+fn request_error(base_url: &Url, error: &reqwest::Error) -> anyhow::Error {
+    let destination = match (base_url.host_str(), base_url.port_or_known_default()) {
+        (Some(host), Some(port)) => format!("{host}:{port}"),
+        (Some(host), None) => host.to_owned(),
+        (None, _) => "configured host".to_owned(),
+    };
+    let reason = if error.is_timeout() {
+        "request timed out"
+    } else if error.is_connect() {
+        "connection failed"
+    } else if error.is_request() {
+        "request could not be constructed"
+    } else {
+        "transport error"
+    };
+
+    anyhow!("Tautulli request to {destination} failed: {reason}")
+}
+
 #[derive(Deserialize)]
 struct ApiEnvelope<T> {
     response: ApiResponse<T>,
@@ -222,6 +245,7 @@ struct ApiResponse<T> {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct HistoryPage {
+    #[serde(deserialize_with = "deserialize_i64")]
     records_filtered: i64,
     #[serde(default)]
     data: Vec<HistoryRow>,
@@ -230,11 +254,17 @@ struct HistoryPage {
 #[derive(Deserialize)]
 struct HistoryRow {
     media_type: String,
+    #[serde(default, deserialize_with = "deserialize_optional_i64")]
     rating_key: Option<i64>,
+    #[serde(default, deserialize_with = "deserialize_optional_i64")]
     grandparent_rating_key: Option<i64>,
+    #[serde(default, deserialize_with = "deserialize_optional_i64")]
     group_count: Option<i64>,
+    #[serde(default, deserialize_with = "deserialize_optional_i64")]
     play_duration: Option<i64>,
+    #[serde(default, deserialize_with = "deserialize_optional_i64")]
     started: Option<i64>,
+    #[serde(default, deserialize_with = "deserialize_optional_i64")]
     stopped: Option<i64>,
 }
 
@@ -286,9 +316,9 @@ enum TopLevelKind {
 
 #[derive(Deserialize)]
 struct Metadata {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
     guid: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_list")]
     guids: Vec<String>,
 }
 
@@ -342,6 +372,52 @@ fn parse_numeric_guid(guid: &str, prefixes: &[&str]) -> Option<i64> {
 
 fn first_guid_component(value: &str) -> Option<&str> {
     value.split(['/', '?']).next()
+}
+
+fn deserialize_i64<'de, D>(deserializer: D) -> Result<i64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_optional_i64(deserializer).map(Option::unwrap_or_default)
+}
+
+fn deserialize_optional_i64<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    match value {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::Number(number)) => number
+            .as_i64()
+            .map(Some)
+            .ok_or_else(|| serde::de::Error::custom("number is outside the i64 range")),
+        Some(serde_json::Value::String(value)) => {
+            let value = value.trim();
+            if value.is_empty() {
+                Ok(None)
+            } else {
+                value.parse().map(Some).map_err(serde::de::Error::custom)
+            }
+        }
+        Some(_) => Err(serde::de::Error::custom(
+            "expected an integer, integer string, null, or empty string",
+        )),
+    }
+}
+
+fn deserialize_optional_string<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer).map(|value| value.unwrap_or_default())
+}
+
+fn deserialize_string_list<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<Vec<String>>::deserialize(deserializer).map(Option::unwrap_or_default)
 }
 
 #[derive(Default)]
@@ -475,6 +551,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn accepts_string_and_null_values_from_tautulli() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v2"))
+            .and(query_param("cmd", "get_history"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(envelope(serde_json::json!({
+                    "recordsFiltered": "2",
+                    "data": [
+                        {
+                            "media_type": "movie",
+                            "rating_key": "10",
+                            "grandparent_rating_key": "",
+                            "group_count": "2",
+                            "play_duration": "120",
+                            "started": null,
+                            "stopped": "200"
+                        },
+                        {
+                            "media_type": "episode",
+                            "rating_key": "",
+                            "grandparent_rating_key": null
+                        }
+                    ]
+                }))),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v2"))
+            .and(query_param("cmd", "get_metadata"))
+            .and(query_param("rating_key", "10"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(envelope(
+                serde_json::json!({"guid": null, "guids": ["tmdb://42"]}),
+            )))
+            .mount(&server)
+            .await;
+
+        let snapshot = TautulliClient::new()
+            .expect("client")
+            .collect(&source(&server, ""))
+            .await
+            .expect("snapshot");
+
+        assert_eq!(snapshot.matched_history_rows, 1);
+        assert_eq!(snapshot.unmatched_history_rows, 1);
+        assert_eq!(snapshot.aggregates[0].key, ContentKey::Movie(42));
+        assert_eq!(snapshot.aggregates[0].play_count, 2);
+        assert_eq!(snapshot.aggregates[0].play_duration_seconds, 120);
+    }
+
+    #[tokio::test]
     async fn reports_history_without_supported_guids_as_unmatched() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
@@ -508,6 +636,32 @@ mod tests {
             .expect("snapshot");
         assert_eq!(snapshot.matched_history_rows, 0);
         assert_eq!(snapshot.unmatched_history_rows, 2);
+    }
+
+    #[tokio::test]
+    async fn reports_connection_failures_without_exposing_the_api_key() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("temporary listener");
+        let address = listener.local_addr().expect("listener address");
+        drop(listener);
+        let source = PlaybackSource {
+            id: "plex".to_owned(),
+            provider: PlaybackProvider::Tautulli,
+            base_url: Url::parse(&format!("http://{address}/")).expect("URL"),
+            api_key: "must-not-appear".to_owned(),
+        };
+
+        let error = TautulliClient::new()
+            .expect("client")
+            .collect(&source)
+            .await
+            .expect_err("connection failure");
+        let message = error.to_string();
+
+        assert!(message.contains(&address.to_string()));
+        assert!(message.contains("connection failed"));
+        assert!(!message.contains("must-not-appear"));
     }
 
     #[tokio::test]
@@ -621,7 +775,12 @@ mod tests {
             .collect(&source(&server, ""))
             .await
             .expect_err("invalid response");
-        assert_eq!(error.to_string(), "Tautulli returned an invalid response");
+        assert!(
+            error
+                .to_string()
+                .starts_with("Tautulli get_history response envelope is invalid:")
+        );
+        assert!(!format!("{error:#}").contains("secret"));
 
         let server = MockServer::start().await;
         Mock::given(method("GET"))
