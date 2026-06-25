@@ -50,6 +50,21 @@ devices, IP addresses, or individual playback sessions.
 Tautulli can only report history recorded while it was installed and running.
 It cannot retroactively import older Plex playback history.
 
+## Web UI
+
+The binary also serves a small web UI at the same address as the API. Open the
+bind address (for example `http://127.0.0.1:3000`) in a browser. It has a
+catalog view for finding large, never-played content and an activity view for
+running and monitoring syncs.
+
+The UI has no authentication of its own; the trusted-network or authenticating
+reverse-proxy guidance above applies to it as well.
+
+The compiled frontend in `web/dist` is embedded into the binary at build time,
+the same way migrations are embedded. A fresh checkout ships only a placeholder,
+so the UI routes report `frontend not built` until you build it (see
+[Development](#development)). The API is unaffected when the UI is absent.
+
 ## API
 
 ### Get content
@@ -151,3 +166,31 @@ rtk cargo test --all-targets --all-features
 
 Database migrations are embedded from `migrations/` and applied at startup.
 Add a new migration instead of modifying a migration that has shipped.
+
+### Frontend
+
+The frontend lives in `web/` (Vite + React + TypeScript). For a production
+build, compile it before the binary so the assets are embedded:
+
+```sh
+npm --prefix web install
+npm --prefix web run build
+rtk cargo build --release
+```
+
+For frontend development, run the API and the Vite dev server in separate
+terminals. The dev server proxies `/api` to the backend, so no CORS
+configuration is needed:
+
+```sh
+rtk cargo run                 # API on 127.0.0.1:3000
+npm --prefix web run dev      # UI on http://localhost:5173
+```
+
+Frontend checks (kept separate from the Rust gates so the Rust build needs no
+Node toolchain):
+
+```sh
+npm --prefix web run typecheck
+npm --prefix web run test
+```

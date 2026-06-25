@@ -6,3 +6,11 @@
 /*.db-shm
 /*.db-wal
 
+# frontend
+/web/node_modules
+/web/dist/*
+!/web/dist/.gitkeep
+
+
+# playwright mcp output
+/.playwright-mcp
