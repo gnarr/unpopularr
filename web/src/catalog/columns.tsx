@@ -91,7 +91,7 @@ export function buildColumns(hasPlayback: boolean): Array<ColumnDef<ContentItem,
       cell: (ctx) => {
         const item = ctx.row.original
         if (item.playback === null) return <span className="text-slate-600">—</span>
-        if (item.playback.playCount === 0) return <span className="text-red-300">Never</span>
+        if (isNeverPlayed(item)) return <span className="text-red-300">Never</span>
         return (
           <span className="tabular-nums">
             {formatDuration(item.playback.playDurationSeconds)}
