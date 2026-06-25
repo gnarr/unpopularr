@@ -24,6 +24,22 @@ describe('request', () => {
     expect(await request('/api/v1/content')).toEqual([{ id: 1 }])
   })
 
+  it('preserves custom headers and enforces JSON responses', async () => {
+    const fetchMock = stubFetch({ status: 204, ok: true })
+
+    await request('/api/v1/sync', {
+      headers: {
+        Accept: 'text/plain',
+        Authorization: 'Bearer token',
+      },
+    })
+
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit
+    const headers = new Headers(init.headers)
+    expect(headers.get('Accept')).toBe('application/json')
+    expect(headers.get('Authorization')).toBe('Bearer token')
+  })
+
   it('throws ApiError with the parsed message on error responses', async () => {
     stubFetch({ status: 500, jsonImpl: () => Promise.resolve({ error: 'internal server error' }) })
     await expect(request('/api/v1/content')).rejects.toMatchObject({

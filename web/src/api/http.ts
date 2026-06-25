@@ -12,9 +12,12 @@ export class ApiError extends Error {
 // The `{ error }` envelope is parsed defensively because some responses (e.g. an
 // unmounted route's 404) have no JSON body.
 export async function request<T>(path: string, init?: RequestInit): Promise<T | null> {
+  const headers = new Headers(init?.headers)
+  headers.set('Accept', 'application/json')
+
   const response = await fetch(path, {
-    headers: { Accept: 'application/json' },
     ...init,
+    headers,
   })
 
   if (response.status === 204) return null

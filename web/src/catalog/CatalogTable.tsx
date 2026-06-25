@@ -42,18 +42,36 @@ export function CatalogTable({
               {group.headers.map((header) => {
                 const align = header.column.columnDef.meta?.align
                 const sorted = header.column.getIsSorted()
+                const canSort = header.column.getCanSort()
                 return (
                   <th
                     key={header.id}
-                    onClick={header.column.getToggleSortingHandler()}
+                    aria-sort={
+                      !canSort
+                        ? undefined
+                        : sorted === 'asc'
+                          ? 'ascending'
+                          : sorted === 'desc'
+                            ? 'descending'
+                            : 'none'
+                    }
                     className={`select-none border-b border-slate-800 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-400 ${
                       align === 'right' ? 'text-right' : 'text-left'
-                    } ${header.column.getCanSort() ? 'cursor-pointer hover:text-slate-200' : ''}`}
+                    }`}
                   >
-                    <span className="inline-flex items-center gap-1">
+                    <button
+                      type="button"
+                      disabled={!canSort}
+                      onClick={canSort ? header.column.getToggleSortingHandler() : undefined}
+                      className={`inline-flex items-center gap-1 rounded ${
+                        canSort
+                          ? 'cursor-pointer hover:text-slate-200 focus:outline-none focus-visible:ring-1 focus-visible:ring-indigo-400'
+                          : ''
+                      }`}
+                    >
                       {flexRender(header.column.columnDef.header, header.getContext())}
                       {sorted === 'asc' ? '▲' : sorted === 'desc' ? '▼' : ''}
-                    </span>
+                    </button>
                   </th>
                 )
               })}
