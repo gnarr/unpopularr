@@ -15,6 +15,7 @@ use crate::{
     catalog::CatalogService,
     collection::{StartSync, SyncService, SyncTrigger},
     playback::{PlaybackService, PlaybackSyncTrigger, StartPlaybackSync},
+    web_assets::spa_fallback,
 };
 
 #[derive(Clone)]
@@ -26,20 +27,34 @@ pub struct AppState {
 
 pub fn router(state: AppState) -> Router {
     let playback_enabled = state.playback.is_some();
-    let router = Router::new()
-        .route("/api/v1/content", get(all_content))
-        .route("/api/v1/sync", get(sync_status).post(start_sync));
-    let router = if playback_enabled {
-        router.route(
-            "/api/v1/playback/sync",
+    let api = Router::new()
+        .route("/v1/content", get(all_content))
+        .route("/v1/sync", get(sync_status).post(start_sync));
+    let api = if playback_enabled {
+        api.route(
+            "/v1/playback/sync",
             get(playback_sync_status).post(start_playback_sync),
         )
     } else {
-        router
+        api
     };
-    router
+    // Unknown `/api/*` paths return a JSON 404 instead of falling through to the
+    // SPA shell, so API clients never receive HTML.
+    let api = api.fallback(api_not_found);
+
+    Router::new()
+        .nest("/api", api)
+        .fallback(spa_fallback)
         .layer(TraceLayer::new_for_http())
         .with_state(Arc::new(state))
+}
+
+async fn api_not_found() -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(ErrorResponse { error: "not found" }),
+    )
+        .into_response()
 }
 
 async fn all_content(State(state): State<Arc<AppState>>) -> Response {
@@ -453,5 +468,76 @@ mod tests {
         })
         .await;
         assert!(completed.is_ok(), "playback sync did not complete");
+    }
+
+    async fn minimal_app() -> axum::Router {
+        let pool = database::test_pool().await;
+        let collection_port: Arc<dyn CollectionRepository> =
+            Arc::new(SqliteCollectionRepository::new(pool.clone()));
+        let catalog_port: Arc<dyn CatalogRepository> = Arc::new(SqliteCatalogRepository::new(pool));
+        router(AppState {
+            catalog: CatalogService::new(catalog_port),
+            sync: SyncService::new(
+                collection_port,
+                ArrClient::new().expect("Arr client"),
+                Arc::new(Vec::new()),
+            ),
+            playback: None,
+        })
+    }
+
+    fn content_type_of(response: &axum::response::Response) -> String {
+        response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_owned()
+    }
+
+    #[tokio::test]
+    async fn unknown_api_path_returns_json_not_found() {
+        let response = minimal_app()
+            .await
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/does-not-exist")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert!(
+            content_type_of(&response).starts_with("application/json"),
+            "unknown /api path must return JSON, not the SPA shell"
+        );
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let error: Value = serde_json::from_slice(&body).expect("error JSON");
+        assert_eq!(error["error"], "not found");
+    }
+
+    #[tokio::test]
+    async fn non_api_path_is_handled_by_spa_fallback() {
+        let response = minimal_app()
+            .await
+            .oneshot(
+                Request::builder()
+                    .uri("/some/deep/link")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        // The SPA fallback serves index.html (when a frontend is embedded) or a
+        // plain-text 404 (when not) — never the API's JSON 404.
+        assert!(
+            !content_type_of(&response).starts_with("application/json"),
+            "non-API paths must not be answered by the API JSON 404 handler"
+        );
     }
 }
