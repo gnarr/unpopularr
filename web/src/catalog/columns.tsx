@@ -1,7 +1,7 @@
 import { createColumnHelper, type ColumnDef, type RowData } from '@tanstack/react-table'
 import type { ContentItem } from '../api/types'
 import { detailCount, detailLabel, isNeverPlayed, year } from '../lib/content'
-import { absoluteTime, formatBytes, relativeTime } from '../lib/format'
+import { absoluteTime, formatBytes, formatDuration, relativeTime } from '../lib/format'
 import { TypeBadge } from '../components/TypeBadge'
 import { InstanceChips } from '../components/InstanceChips'
 
@@ -81,6 +81,22 @@ export function buildColumns(hasPlayback: boolean): Array<ColumnDef<ContentItem,
           )
         }
         return <span className="tabular-nums">{item.playback.playCount.toLocaleString()}</span>
+      },
+    }),
+    helper.accessor((item) => item.playback?.playDurationSeconds ?? undefined, {
+      id: 'watchTime',
+      header: 'Watch time',
+      sortUndefined: 'last',
+      meta: { align: 'right' },
+      cell: (ctx) => {
+        const item = ctx.row.original
+        if (item.playback === null) return <span className="text-slate-600">—</span>
+        if (isNeverPlayed(item)) return <span className="text-red-300">Never</span>
+        return (
+          <span className="tabular-nums">
+            {formatDuration(item.playback.playDurationSeconds)}
+          </span>
+        )
       },
     }),
     helper.accessor(
