@@ -40,8 +40,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 #########################################
 FROM debian:bookworm-slim AS runtime
 # ca-certificates: outbound HTTPS (reqwest/rustls) to *arr/Tautulli instances.
+# libsqlite3-0: runtime SQLite library used by sqlx.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates libsqlite3-0 \
     && rm -rf /var/lib/apt/lists/*
 RUN groupadd --gid 10001 unpopularr \
     && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin unpopularr
