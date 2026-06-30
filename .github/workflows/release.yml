@@ -1,0 +1,579 @@
+name: Release
+
+"on":
+  pull_request:
+    branches:
+      - main
+    types:
+      - closed
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Existing SemVer tag to republish. Leave empty to create the next release.
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  packages: write
+  pull-requests: read
+
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_EDIT_VERSION: 0.13.10
+  DOCKERHUB_IMAGE: gnarr/unpopularr
+  GHCR_IMAGE: ghcr.io/gnarr/unpopularr
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
+    outputs:
+      should_publish: ${{ steps.release.outputs.should_publish }}
+      version: ${{ steps.release.outputs.version }}
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Normalize workflow input
+        id: release_input
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          version="$(printf '%s' "${REQUESTED_VERSION:-}" | tr -d '[:space:]')"
+          if [ -n "$version" ]; then
+            if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+              echo "Manual republish version must be a numeric SemVer tag, got: $version" >&2
+              exit 1
+            fi
+
+            {
+              echo "mode=republish"
+              echo "version=$version"
+            } >> "$GITHUB_OUTPUT"
+            echo "Republishing existing release tag: $version"
+          else
+            {
+              echo "mode=auto"
+              echo "version="
+            } >> "$GITHUB_OUTPUT"
+            echo "Creating the next automatic release."
+          fi
+
+      - name: Checkout release source
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_TOKEN || github.token }}
+
+      - name: Ensure release tag
+        if: steps.release_input.outputs.mode == 'republish'
+        run: |
+          set -euo pipefail
+
+          version="${{ steps.release_input.outputs.version }}"
+          git fetch origin --tags
+          if ! git rev-parse --verify "refs/tags/$version^{commit}" >/dev/null; then
+            echo "Manual republish tag does not exist: $version" >&2
+            exit 1
+          fi
+          git checkout --detach "$version"
+
+      - name: Ensure main branch
+        if: steps.release_input.outputs.mode == 'auto'
+        run: |
+          set -euo pipefail
+
+          git fetch origin main --tags
+          git checkout -B main origin/main
+
+      - name: Determine release commit range
+        id: release_range
+        if: steps.release_input.outputs.mode == 'auto'
+        run: |
+          set -euo pipefail
+
+          latest_tag="$(git describe --tags --abbrev=0 --match "[0-9]*.[0-9]*.[0-9]*" 2>/dev/null || true)"
+          if [ -n "$latest_tag" ]; then
+            check_range="$latest_tag..HEAD"
+            log_range="$check_range"
+            root_commit=""
+            echo "Latest SemVer tag: $latest_tag"
+            echo "Checking commits in range: $check_range"
+          else
+            latest_tag=""
+            root_commit="$(git rev-list --max-parents=0 HEAD)"
+            check_range="$root_commit..HEAD"
+            log_range="HEAD"
+            echo "No SemVer tag found. Checking all commits for the initial release."
+          fi
+
+          {
+            echo "latest_tag=$latest_tag"
+            echo "check_range=$check_range"
+            echo "log_range=$log_range"
+            echo "root_commit=$root_commit"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Conventional commit check
+        if: steps.release_input.outputs.mode == 'auto'
+        uses: cocogitto/cocogitto-action@v4
+        with:
+          command: check
+          args: ${{ steps.release_range.outputs.check_range }}
+          git-user: github-actions[bot]
+          git-user-email: 41898282+github-actions[bot]@users.noreply.github.com
+
+      - name: Install Cocogitto for republish
+        if: steps.release_input.outputs.mode == 'republish'
+        uses: cocogitto/cocogitto-action@v4
+        with:
+          command: check
+          git-user: github-actions[bot]
+          git-user-email: 41898282+github-actions[bot]@users.noreply.github.com
+
+      - name: Expose Cocogitto executable
+        run: |
+          set -euo pipefail
+
+          if command -v cog >/dev/null 2>&1; then
+            cog --version
+            exit 0
+          fi
+
+          cog_path=""
+          for candidate in "$HOME/.local/bin/cog" "$HOME/.cargo/bin/cog" "$RUNNER_TEMP/cog"; do
+            if [ -x "$candidate" ]; then
+              cog_path="$candidate"
+              break
+            fi
+          done
+
+          if [ -z "$cog_path" ]; then
+            echo "Cocogitto was not found after cocogitto-action installed it." >&2
+            exit 1
+          fi
+
+          dirname "$cog_path" >> "$GITHUB_PATH"
+          "$cog_path" --version
+
+      - name: Initial commit check
+        if: steps.release_input.outputs.mode == 'auto' && steps.release_range.outputs.root_commit != ''
+        run: |
+          set -euo pipefail
+
+          message_path="$RUNNER_TEMP/root-commit-message.txt"
+          git log --max-count=1 --format=%B "${{ steps.release_range.outputs.root_commit }}" > "$message_path"
+          cog verify --file "$message_path"
+
+      - name: Install Rust
+        if: steps.release_input.outputs.mode == 'auto'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Node
+        if: steps.release_input.outputs.mode == 'auto'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Restore cargo-edit
+        id: cargo_edit_cache
+        if: steps.release_input.outputs.mode == 'auto'
+        uses: actions/cache@v5
+        with:
+          path: ~/.cargo/bin/cargo-set-version
+          key: cargo-edit-${{ runner.os }}-${{ runner.arch }}-${{ env.CARGO_EDIT_VERSION }}
+
+      - name: Install cargo-edit
+        if: steps.release_input.outputs.mode == 'auto' && steps.cargo_edit_cache.outputs.cache-hit != 'true'
+        run: cargo install cargo-edit --version "$CARGO_EDIT_VERSION" --locked
+
+      - name: Verify cargo-edit
+        if: steps.release_input.outputs.mode == 'auto'
+        run: cargo set-version --version
+
+      - name: Determine release version
+        id: release_plan
+        if: steps.release_input.outputs.mode == 'auto'
+        run: |
+          set -euo pipefail
+
+          latest_tag="${{ steps.release_range.outputs.latest_tag }}"
+          range="${{ steps.release_range.outputs.log_range }}"
+          if [ -z "$range" ]; then
+            echo "Release commit range was not determined." >&2
+            exit 1
+          fi
+
+          should_release=false
+          bump_subject_regex='^(feat|fix|perf)(\([^)]+\))?!?:'
+          breaking_subject_regex='^[A-Za-z]+(\([^)]+\))?!:'
+          breaking_footer_regex='^BREAKING[ -]CHANGE:'
+          while IFS= read -r commit_sha; do
+            subject="$(git log --max-count=1 --format=%s "$commit_sha")"
+            if [[ "$subject" =~ $bump_subject_regex ]]; then
+              should_release=true
+              break
+            fi
+
+            if [[ "$subject" =~ $breaking_subject_regex ]]; then
+              should_release=true
+              break
+            fi
+
+            commit="$(git log --max-count=1 --format=%B "$commit_sha")"
+            if grep -Eq "$breaking_footer_regex" <<< "$commit"; then
+              should_release=true
+              break
+            fi
+          done < <(git rev-list "$range")
+
+          if [ "$should_release" != "true" ]; then
+            {
+              echo "should_release=false"
+              echo "version="
+            } >> "$GITHUB_OUTPUT"
+            if [ -z "$latest_tag" ]; then
+              echo "No SemVer-bumping conventional commits found in the repository history. Skipping release."
+            else
+              echo "No SemVer-bumping conventional commits found since $latest_tag. Skipping release."
+            fi
+            exit 0
+          fi
+
+          version="$(cog bump --dry-run --auto | tail -n 1 | tr -d '[:space:]')"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Cocogitto returned an invalid SemVer version: $version" >&2
+            exit 1
+          fi
+
+          {
+            echo "should_release=true"
+            echo "version=$version"
+          } >> "$GITHUB_OUTPUT"
+          echo "Next release version: $version"
+
+      - name: Create release commit and tag
+        if: steps.release_plan.outputs.should_release == 'true'
+        run: cog bump --auto
+
+      - name: Push release commit and tag
+        if: steps.release_plan.outputs.should_release == 'true'
+        run: |
+          set -euo pipefail
+
+          version="${{ steps.release_plan.outputs.version }}"
+          git push origin HEAD:main
+          git push origin "refs/tags/$version"
+
+      - name: Select release version
+        id: release
+        run: |
+          set -euo pipefail
+
+          if [ "${{ steps.release_input.outputs.mode }}" = "republish" ]; then
+            {
+              echo "should_publish=true"
+              echo "version=${{ steps.release_input.outputs.version }}"
+              echo "mode=republish"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "${{ steps.release_plan.outputs.should_release }}" = "true" ]; then
+            {
+              echo "should_publish=true"
+              echo "version=${{ steps.release_plan.outputs.version }}"
+              echo "mode=auto"
+            } >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo "should_publish=false"
+              echo "version="
+              echo "mode=auto"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Generate release notes
+        id: release_notes
+        if: steps.release.outputs.should_publish == 'true'
+        run: |
+          set -euo pipefail
+
+          version="${{ steps.release.outputs.version }}"
+          notes_path="$RUNNER_TEMP/release-notes-$version.md"
+          cog changelog --at "$version" > "$notes_path"
+
+          {
+            echo ""
+            echo "## Container images"
+            echo ""
+            echo "- \`docker pull $DOCKERHUB_IMAGE:$version\`"
+            echo "- \`docker pull $GHCR_IMAGE:$version\`"
+          } >> "$notes_path"
+
+          echo "notes_path=$notes_path" >> "$GITHUB_OUTPUT"
+
+      - name: Upload release notes
+        if: steps.release.outputs.should_publish == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-notes
+          path: ${{ steps.release_notes.outputs.notes_path }}
+          if-no-files-found: error
+          retention-days: 1
+
+  docker-build:
+    name: Build ${{ matrix.platform }}
+    needs: release
+    if: needs.release.outputs.should_publish == 'true'
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            artifact: digest-linux-amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            artifact: digest-linux-arm64
+
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.release.outputs.version }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker Hub digest image
+        id: build_dockerhub
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: ${{ matrix.platform }}
+          labels: |
+            org.opencontainers.image.title=Unpopularr
+            org.opencontainers.image.description=Self-hosted media library analytics backend
+            org.opencontainers.image.source=https://github.com/gnarr/unpopularr
+          outputs: type=image,name=${{ env.DOCKERHUB_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.artifact }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.artifact }}
+
+      - name: Build and push GHCR digest image
+        id: build_ghcr
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: ${{ matrix.platform }}
+          labels: |
+            org.opencontainers.image.title=Unpopularr
+            org.opencontainers.image.description=Self-hosted media library analytics backend
+            org.opencontainers.image.source=https://github.com/gnarr/unpopularr
+          outputs: type=image,name=${{ env.GHCR_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.artifact }}
+
+      - name: Export image digest
+        env:
+          DOCKERHUB_DIGEST: ${{ steps.build_dockerhub.outputs.digest }}
+          DOCKERHUB_METADATA: ${{ steps.build_dockerhub.outputs.metadata }}
+          GHCR_DIGEST: ${{ steps.build_ghcr.outputs.digest }}
+          GHCR_METADATA: ${{ steps.build_ghcr.outputs.metadata }}
+        run: |
+          set -euo pipefail
+
+          write_digest() {
+            local registry="$1"
+            local digest="$2"
+            local metadata="$3"
+
+            if [ -z "$digest" ] && [ -n "$metadata" ]; then
+              digest="$(jq -r '."containerimage.digest" // .["containerimage.descriptor"].digest // empty' <<< "$metadata")"
+            fi
+
+            if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "Docker build for $registry did not return a valid image digest." >&2
+              echo "$metadata" >&2
+              exit 1
+            fi
+
+            mkdir -p "$RUNNER_TEMP/digests/$registry"
+            touch "$RUNNER_TEMP/digests/$registry/${digest#sha256:}"
+          }
+
+          write_digest dockerhub "$DOCKERHUB_DIGEST" "$DOCKERHUB_METADATA"
+          write_digest ghcr "$GHCR_DIGEST" "$GHCR_METADATA"
+
+      - name: Upload image digest
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ runner.temp }}/digests/**
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish
+    needs:
+      - release
+      - docker-build
+    if: needs.release.outputs.should_publish == 'true'
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.release.outputs.version }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download image digests
+        uses: actions/download-artifact@v4
+        with:
+          pattern: digest-*
+          path: ${{ runner.temp }}/digests
+          merge-multiple: true
+
+      - name: Extract Docker metadata
+        id: docker_meta
+        uses: docker/metadata-action@v6
+        with:
+          images: |
+            ${{ env.DOCKERHUB_IMAGE }}
+            ${{ env.GHCR_IMAGE }}
+          flavor: |
+            latest=false
+          tags: |
+            type=semver,pattern={{version}},value=${{ needs.release.outputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.release.outputs.version }}
+            type=semver,pattern={{major}},value=${{ needs.release.outputs.version }}
+            type=raw,value=latest
+          labels: |
+            org.opencontainers.image.title=Unpopularr
+            org.opencontainers.image.description=Self-hosted media library analytics backend
+            org.opencontainers.image.source=https://github.com/gnarr/unpopularr
+
+      - name: Create Docker manifests
+        env:
+          DOCKER_METADATA_OUTPUT_JSON: ${{ steps.docker_meta.outputs.json }}
+        run: |
+          set -euo pipefail
+
+          shopt -s nullglob
+          dockerhub_digest_files=("$RUNNER_TEMP"/digests/dockerhub/*)
+          ghcr_digest_files=("$RUNNER_TEMP"/digests/ghcr/*)
+          if [ "${#dockerhub_digest_files[@]}" -eq 0 ]; then
+            echo "No Docker Hub image digest artifacts were downloaded." >&2
+            exit 1
+          fi
+
+          if [ "${#ghcr_digest_files[@]}" -eq 0 ]; then
+            echo "No GHCR image digest artifacts were downloaded." >&2
+            exit 1
+          fi
+
+          mapfile -t tags < <(jq -r '.tags[]' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          for tag in "${tags[@]}"; do
+            image="${tag%:*}"
+            case "$tag" in
+              "$DOCKERHUB_IMAGE":*)
+                digest_files=("${dockerhub_digest_files[@]}")
+                ;;
+              "$GHCR_IMAGE":*)
+                digest_files=("${ghcr_digest_files[@]}")
+                ;;
+              *)
+                echo "Unexpected Docker metadata tag: $tag" >&2
+                exit 1
+                ;;
+            esac
+
+            refs=()
+            for digest_file in "${digest_files[@]}"; do
+              refs+=("$image@sha256:$(basename "$digest_file")")
+            done
+
+            docker buildx imagetools create -t "$tag" "${refs[@]}"
+          done
+
+      - name: Publish Docker Hub README
+        uses: peter-evans/dockerhub-description@v5
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ env.DOCKERHUB_IMAGE }}
+          readme-filepath: ./README.md
+          short-description: Self-hosted media library analytics backend
+
+      - name: Download release notes
+        uses: actions/download-artifact@v4
+        with:
+          name: release-notes
+          path: ${{ runner.temp }}/release-notes
+
+      - name: Locate release notes
+        id: release_notes
+        run: |
+          set -euo pipefail
+
+          notes_path="$(find "$RUNNER_TEMP/release-notes" -type f -name 'release-notes-*.md' -print -quit)"
+          if [ -z "$notes_path" ]; then
+            echo "Release notes artifact did not contain release-notes-*.md." >&2
+            exit 1
+          fi
+
+          echo "notes_path=$notes_path" >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.release.outputs.version }}
+          name: ${{ needs.release.outputs.version }}
+          body_path: ${{ steps.release_notes.outputs.notes_path }}
+          token: ${{ secrets.RELEASE_TOKEN || github.token }}

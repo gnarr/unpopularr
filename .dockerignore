@@ -1,0 +1,27 @@
+# VCS / CI / editor
+.git
+.gitignore
+.github
+.gitattributes
+# Rebuilt in-build, huge
+target/
+web/node_modules/
+web/dist/
+.playwright-mcp/
+# Local runtime state & secrets — never bake into the image
+data/
+*.db
+*.db-shm
+*.db-wal
+.env
+config.toml
+# Docs / docker meta not needed by the build
+README.md
+*.md
+Dockerfile
+.dockerignore
+docker-compose*.yml
+# OS / editor noise
+.DS_Store
+.idea/
+.vscode/
