@@ -18,8 +18,12 @@ RUN npm run build   # tsc --noEmit && vite build -> /web/dist
 # edition 2024 + rust-version 1.94 -> needs Rust >= 1.94. Debian/glibc to match runtime.
 FROM rust:1.94-slim-bookworm AS build
 WORKDIR /app
-# Warm crate cache from the lockfile before copying source.
+# Warm crate cache from the lockfile before copying source. cargo needs a target
+# to parse the manifest, so stub out src/main.rs + src/lib.rs; the real COPY src
+# below overwrites them. This keeps dependency downloads in a layer that only
+# invalidates when Cargo.toml / Cargo.lock change.
 COPY Cargo.toml Cargo.lock ./
+RUN mkdir -p src && echo 'fn main() {}' > src/main.rs && : > src/lib.rs
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     cargo fetch --locked
