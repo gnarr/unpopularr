@@ -101,7 +101,7 @@ impl PlaybackRepository for SqlitePlaybackRepository {
             .context("created playback sync run was not found")
     }
 
-    async fn store_snapshot(
+    async fn store_events(
         &self,
         sync_run_id: i64,
         source: &PlaybackSource,
@@ -113,34 +113,60 @@ impl PlaybackRepository for SqlitePlaybackRepository {
             status,
             PlaybackSyncStatus::Succeeded | PlaybackSyncStatus::Partial
         ) {
-            bail!("successful playback snapshot requires a completed status");
+            bail!("successful playback sync requires a completed status");
         }
 
         let mut transaction = self.pool.begin().await?;
+
+        // Accumulate individual sessions. Re-syncing a Tautulli row that we have
+        // already stored is idempotent, so history survives Tautulli purges.
+        for event in &snapshot.events {
+            sqlx::query(
+                r#"
+                INSERT INTO playback_events (
+                    source_id, source_row_id, content_type, content_id,
+                    played_at, duration_seconds
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(source_id, source_row_id) DO UPDATE SET
+                    content_type = excluded.content_type,
+                    content_id = excluded.content_id,
+                    played_at = excluded.played_at,
+                    duration_seconds = excluded.duration_seconds
+                "#,
+            )
+            .bind(&source.id)
+            .bind(event.source_row_id)
+            .bind(event.key.content_type())
+            .bind(event.key.content_id())
+            .bind(event.played_at)
+            .bind(event.duration_seconds)
+            .execute(&mut *transaction)
+            .await?;
+        }
+
+        // Recompute the materialized aggregate that the catalog reads from. This
+        // is self-healing: a stale row is corrected on the next successful sync.
         sqlx::query("DELETE FROM playback_snapshots WHERE source_id = ?")
             .bind(&source.id)
             .execute(&mut *transaction)
             .await?;
-
-        for aggregate in &snapshot.aggregates {
-            sqlx::query(
-                r#"
-                INSERT INTO playback_snapshots (
-                    source_id, content_type, content_id, play_count,
-                    play_duration_seconds, last_played_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?)
-                "#,
+        sqlx::query(
+            r#"
+            INSERT INTO playback_snapshots (
+                source_id, content_type, content_id, play_count,
+                play_duration_seconds, last_played_at
             )
-            .bind(&source.id)
-            .bind(aggregate.key.content_type())
-            .bind(aggregate.key.content_id())
-            .bind(aggregate.play_count)
-            .bind(aggregate.play_duration_seconds)
-            .bind(aggregate.last_played_at)
-            .execute(&mut *transaction)
-            .await?;
-        }
+            SELECT source_id, content_type, content_id,
+                   COUNT(*), COALESCE(SUM(duration_seconds), 0), MAX(played_at)
+            FROM playback_events
+            WHERE source_id = ?
+            GROUP BY content_type, content_id
+            "#,
+        )
+        .bind(&source.id)
+        .execute(&mut *transaction)
+        .await?;
 
         sqlx::query("UPDATE playback_sources SET last_successful_sync_at = ? WHERE id = ?")
             .bind(completed_at)
@@ -275,13 +301,13 @@ fn parse_status(value: &str) -> Result<PlaybackSyncStatus> {
 
 #[cfg(test)]
 mod tests {
-    use chrono::Utc;
+    use chrono::{DateTime, Utc};
     use url::Url;
 
     use crate::{
         database,
         playback::{
-            ContentKey, PlaybackAggregate, PlaybackRepository, PlaybackSnapshot, PlaybackSource,
+            ContentKey, PlaybackEvent, PlaybackRepository, PlaybackSnapshot, PlaybackSource,
             PlaybackSyncStatus, PlaybackSyncTrigger,
         },
     };
@@ -297,8 +323,30 @@ mod tests {
         }
     }
 
+    fn event(
+        source_row_id: i64,
+        key: ContentKey,
+        played_at_secs: i64,
+        duration_seconds: i64,
+    ) -> PlaybackEvent {
+        PlaybackEvent {
+            key,
+            source_row_id,
+            played_at: DateTime::from_timestamp(played_at_secs, 0).expect("timestamp"),
+            duration_seconds,
+        }
+    }
+
+    fn snapshot(events: Vec<PlaybackEvent>) -> PlaybackSnapshot {
+        PlaybackSnapshot {
+            matched_history_rows: events.len() as i64,
+            unmatched_history_rows: 0,
+            events,
+        }
+    }
+
     #[tokio::test]
-    async fn replaces_snapshots_atomically_and_removes_deleted_sources() {
+    async fn accumulates_events_and_removes_deleted_sources() {
         let pool = database::test_pool().await;
         let repository = SqlitePlaybackRepository::new(pool.clone());
         let source = source("plex");
@@ -310,21 +358,14 @@ mod tests {
             .create_sync_run(&source, PlaybackSyncTrigger::Manual, Utc::now())
             .await
             .expect("create run");
-        let snapshot = PlaybackSnapshot {
-            aggregates: vec![PlaybackAggregate {
-                key: ContentKey::Movie(1),
-                play_count: 2,
-                play_duration_seconds: 300,
-                last_played_at: Some(Utc::now()),
-            }],
-            matched_history_rows: 1,
-            unmatched_history_rows: 0,
-        };
         let run = repository
-            .store_snapshot(
+            .store_events(
                 run.id,
                 &source,
-                &snapshot,
+                &snapshot(vec![
+                    event(1, ContentKey::Movie(1), 100, 120),
+                    event(2, ContentKey::Movie(1), 200, 60),
+                ]),
                 PlaybackSyncStatus::Succeeded,
                 Utc::now(),
             )
@@ -332,19 +373,127 @@ mod tests {
             .expect("store");
         assert_eq!(run.status, PlaybackSyncStatus::Succeeded);
 
+        let event_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM playback_events")
+            .fetch_one(&pool)
+            .await
+            .expect("count events");
+        assert_eq!(event_count, 2);
+
+        // The materialized snapshot aggregates both sessions of the movie.
+        let (play_count, duration): (i64, i64) = sqlx::query_as(
+            "SELECT play_count, play_duration_seconds FROM playback_snapshots \
+             WHERE content_type = 'movie' AND content_id = '1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("snapshot row");
+        assert_eq!(play_count, 2);
+        assert_eq!(duration, 180);
+
+        // Removing the source cascades both the events and the derived snapshot.
         repository
             .reconcile_source(None)
             .await
             .expect("remove source");
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM playback_snapshots")
+        let event_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM playback_events")
             .fetch_one(&pool)
             .await
-            .expect("count");
-        assert_eq!(count, 0);
+            .expect("count events");
+        assert_eq!(event_count, 0);
+        let snapshot_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM playback_snapshots")
+            .fetch_one(&pool)
+            .await
+            .expect("count snapshots");
+        assert_eq!(snapshot_count, 0);
     }
 
     #[tokio::test]
-    async fn failed_sync_preserves_previous_snapshot() {
+    async fn re_syncing_the_same_row_is_idempotent_and_accumulates_new_rows() {
+        let pool = database::test_pool().await;
+        let repository = SqlitePlaybackRepository::new(pool.clone());
+        let source = source("plex");
+        repository
+            .reconcile_source(Some(&source))
+            .await
+            .expect("reconcile");
+
+        let first = repository
+            .create_sync_run(&source, PlaybackSyncTrigger::Manual, Utc::now())
+            .await
+            .expect("first run");
+        repository
+            .store_events(
+                first.id,
+                &source,
+                &snapshot(vec![
+                    event(1, ContentKey::Movie(1), 100, 120),
+                    event(2, ContentKey::Movie(1), 200, 60),
+                    event(3, ContentKey::Series(2), 300, 30),
+                ]),
+                PlaybackSyncStatus::Succeeded,
+                Utc::now(),
+            )
+            .await
+            .expect("first store");
+
+        // Second sync re-sends row 1 with an updated duration and adds row 4.
+        // Rows 2 and 3 are absent (purged from Tautulli) but must be retained.
+        let second = repository
+            .create_sync_run(&source, PlaybackSyncTrigger::Manual, Utc::now())
+            .await
+            .expect("second run");
+        repository
+            .store_events(
+                second.id,
+                &source,
+                &snapshot(vec![
+                    event(1, ContentKey::Movie(1), 100, 999),
+                    event(4, ContentKey::Series(2), 400, 45),
+                ]),
+                PlaybackSyncStatus::Succeeded,
+                Utc::now(),
+            )
+            .await
+            .expect("second store");
+
+        let event_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM playback_events")
+            .fetch_one(&pool)
+            .await
+            .expect("count events");
+        assert_eq!(event_count, 4);
+
+        // Row 1 was updated in place, not duplicated.
+        let duration: i64 = sqlx::query_scalar(
+            "SELECT duration_seconds FROM playback_events WHERE source_row_id = 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("row 1");
+        assert_eq!(duration, 999);
+
+        // The recomputed snapshot reflects every accumulated session.
+        let (movie_count, movie_duration): (i64, i64) = sqlx::query_as(
+            "SELECT play_count, play_duration_seconds FROM playback_snapshots \
+             WHERE content_type = 'movie' AND content_id = '1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("movie snapshot");
+        assert_eq!(movie_count, 2); // rows 1 and 2
+        assert_eq!(movie_duration, 1059); // 999 + 60
+
+        let last_played: Option<DateTime<Utc>> = sqlx::query_scalar(
+            "SELECT last_played_at FROM playback_snapshots \
+             WHERE content_type = 'series' AND content_id = '2'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("series snapshot");
+        assert_eq!(last_played.map(|played| played.timestamp()), Some(400));
+    }
+
+    #[tokio::test]
+    async fn failed_sync_preserves_previous_events() {
         let pool = database::test_pool().await;
         let repository = SqlitePlaybackRepository::new(pool.clone());
         let source = source("plex");
@@ -357,19 +506,10 @@ mod tests {
             .await
             .expect("create successful run");
         repository
-            .store_snapshot(
+            .store_events(
                 successful.id,
                 &source,
-                &PlaybackSnapshot {
-                    aggregates: vec![PlaybackAggregate {
-                        key: ContentKey::Series(2),
-                        play_count: 1,
-                        play_duration_seconds: 60,
-                        last_played_at: None,
-                    }],
-                    matched_history_rows: 1,
-                    unmatched_history_rows: 0,
-                },
+                &snapshot(vec![event(1, ContentKey::Series(2), 100, 60)]),
                 PlaybackSyncStatus::Succeeded,
                 Utc::now(),
             )
@@ -385,11 +525,16 @@ mod tests {
             .await
             .expect("mark failed");
 
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM playback_snapshots")
+        let event_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM playback_events")
             .fetch_one(&pool)
             .await
-            .expect("count");
-        assert_eq!(count, 1);
+            .expect("count events");
+        assert_eq!(event_count, 1);
+        let snapshot_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM playback_snapshots")
+            .fetch_one(&pool)
+            .await
+            .expect("count snapshots");
+        assert_eq!(snapshot_count, 1);
     }
 
     #[tokio::test]

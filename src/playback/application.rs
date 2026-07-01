@@ -97,7 +97,7 @@ impl PlaybackService {
         let status = snapshot.status();
         let run = match self
             .repository
-            .store_snapshot(run_id, &self.source, &snapshot, status, Utc::now())
+            .store_events(run_id, &self.source, &snapshot, status, Utc::now())
             .await
         {
             Ok(run) => run,
@@ -151,12 +151,13 @@ mod tests {
 
     use anyhow::Result;
     use async_trait::async_trait;
+    use chrono::DateTime;
     use url::Url;
 
     use crate::{
         database,
         playback::{
-            ContentKey, PlaybackAggregate, PlaybackProvider, PlaybackRepository, PlaybackSnapshot,
+            ContentKey, PlaybackEvent, PlaybackProvider, PlaybackRepository, PlaybackSnapshot,
             PlaybackSource, PlaybackSourceClient, PlaybackSyncStatus, PlaybackSyncTrigger,
             StartPlaybackSync, adapters::sqlite::SqlitePlaybackRepository,
         },
@@ -217,11 +218,11 @@ mod tests {
             repository_port,
             Arc::new(StaticClient {
                 snapshot: PlaybackSnapshot {
-                    aggregates: vec![PlaybackAggregate {
+                    events: vec![PlaybackEvent {
                         key: ContentKey::Movie(1),
-                        play_count: 1,
-                        play_duration_seconds: 60,
-                        last_played_at: None,
+                        source_row_id: 1,
+                        played_at: DateTime::from_timestamp(100, 0).expect("timestamp"),
+                        duration_seconds: 60,
                     }],
                     matched_history_rows: 1,
                     unmatched_history_rows: 1,
@@ -257,7 +258,7 @@ mod tests {
             repository_port,
             Arc::new(StaticClient {
                 snapshot: PlaybackSnapshot {
-                    aggregates: Vec::new(),
+                    events: Vec::new(),
                     matched_history_rows: 0,
                     unmatched_history_rows: 2,
                 },
@@ -277,5 +278,10 @@ mod tests {
             .await
             .expect("count snapshots");
         assert_eq!(snapshot_count, 0);
+        let event_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM playback_events")
+            .fetch_one(&pool)
+            .await
+            .expect("count events");
+        assert_eq!(event_count, 0);
     }
 }
