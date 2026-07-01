@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [0.1.1](https://github.com/gnarr/unpopularr/compare/cbe605d01ef4d267b7483dc522a14b6500499f61..0.1.1) - 2026-07-01
+#### Bug Fixes
+- (**docker**) stub crate sources before cargo fetch (#6) - ([cbe605d](https://github.com/gnarr/unpopularr/commit/cbe605d01ef4d267b7483dc522a14b6500499f61)) - Gunnar Cortes
+
+- - -
+
 ## [0.1.0](https://github.com/gnarr/unpopularr/compare/914a0b76c15050f2e5615022ac62692fb46582e3..0.1.0) - 2026-06-30
 #### Features
 - (**playback**) add Tautulli playback tracking (#2) - ([d5f43da](https://github.com/gnarr/unpopularr/commit/d5f43daff2b0ca55296a413c2aeac5e1b182d1fd)) - Gunnar Cortes
