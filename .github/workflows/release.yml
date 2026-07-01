@@ -182,7 +182,7 @@ jobs:
 
       - name: Install Node
         if: steps.release_input.outputs.mode == 'auto'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: "22"
 
@@ -383,6 +383,12 @@ jobs:
             org.opencontainers.image.description=Self-hosted media library analytics backend
             org.opencontainers.image.source=https://github.com/gnarr/unpopularr
           outputs: type=image,name=${{ env.DOCKERHUB_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          # Attestations turn each per-arch build into an index (attestation
+          # manifest + manifest list). Pushing that by-digest and merging with
+          # `imagetools create` breaks the multi-runner pattern (and fails the
+          # push to Docker Hub with "blob upload unknown"). Disable both.
+          provenance: false
+          sbom: false
           cache-from: type=gha,scope=${{ matrix.artifact }}
           cache-to: type=gha,mode=max,scope=${{ matrix.artifact }}
 
@@ -398,6 +404,8 @@ jobs:
             org.opencontainers.image.description=Self-hosted media library analytics backend
             org.opencontainers.image.source=https://github.com/gnarr/unpopularr
           outputs: type=image,name=${{ env.GHCR_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          provenance: false
+          sbom: false
           cache-from: type=gha,scope=${{ matrix.artifact }}
 
       - name: Export image digest
