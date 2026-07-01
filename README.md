@@ -26,7 +26,7 @@ export RADARR_4K_API_KEY='...'
 export SONARR_HD_API_KEY='...'
 export LIDARR_API_KEY='...'
 export TAUTULLI_API_KEY='...'
-rtk cargo run
+cargo run
 ```
 
 Set `UNPOPULARR_CONFIG` to use a different configuration path. Logging is
@@ -158,10 +158,10 @@ relevant history cannot be matched through TMDB, TVDB, or MusicBrainz IDs, and
 All shell commands on this machine must be run through RTK:
 
 ```sh
-rtk cargo fix --allow-dirty --allow-staged
-rtk cargo fmt
-rtk cargo clippy --all-targets --all-features -- -D warnings
-rtk cargo test --all-targets --all-features
+cargo fix --allow-dirty --allow-staged
+cargo fmt
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-targets --all-features
 ```
 
 Database migrations are embedded from `migrations/` and applied at startup.
@@ -175,7 +175,7 @@ build, compile it before the binary so the assets are embedded:
 ```sh
 npm --prefix web install
 npm --prefix web run build
-rtk cargo build --release
+cargo build --release
 ```
 
 For frontend development, run the API and the Vite dev server in separate
@@ -183,7 +183,7 @@ terminals. The dev server proxies `/api` to the backend, so no CORS
 configuration is needed:
 
 ```sh
-rtk cargo run                 # API on 127.0.0.1:3000
+cargo run                 # API on 127.0.0.1:3000
 npm --prefix web run dev      # UI on http://localhost:5173
 ```
 
