@@ -62,17 +62,19 @@ impl ContentKey {
     }
 }
 
+/// A single playback session collected from the source (one Tautulli history row).
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PlaybackAggregate {
+pub struct PlaybackEvent {
     pub key: ContentKey,
-    pub play_count: i64,
-    pub play_duration_seconds: i64,
-    pub last_played_at: Option<DateTime<Utc>>,
+    /// Stable source-side identifier used to deduplicate events across syncs.
+    pub source_row_id: i64,
+    pub played_at: DateTime<Utc>,
+    pub duration_seconds: i64,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct PlaybackSnapshot {
-    pub aggregates: Vec<PlaybackAggregate>,
+    pub events: Vec<PlaybackEvent>,
     pub matched_history_rows: i64,
     pub unmatched_history_rows: i64,
 }

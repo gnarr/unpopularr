@@ -5,7 +5,7 @@ mod ports;
 
 pub use application::{PlaybackService, StartPlaybackSync};
 pub use domain::{
-    ContentKey, PlaybackAggregate, PlaybackProvider, PlaybackSnapshot, PlaybackSource,
-    PlaybackSyncRun, PlaybackSyncStatus, PlaybackSyncTrigger,
+    ContentKey, PlaybackEvent, PlaybackProvider, PlaybackSnapshot, PlaybackSource, PlaybackSyncRun,
+    PlaybackSyncStatus, PlaybackSyncTrigger,
 };
 pub use ports::{PlaybackRepository, PlaybackSourceClient};

@@ -24,7 +24,7 @@ pub trait PlaybackRepository: Send + Sync {
         started_at: DateTime<Utc>,
     ) -> Result<PlaybackSyncRun>;
 
-    async fn store_snapshot(
+    async fn store_events(
         &self,
         sync_run_id: i64,
         source: &PlaybackSource,

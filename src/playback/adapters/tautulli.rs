@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     time::Duration,
 };
 
@@ -16,7 +16,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer};
 
 use crate::playback::{
-    ContentKey, PlaybackAggregate, PlaybackSnapshot, PlaybackSource, PlaybackSourceClient,
+    ContentKey, PlaybackEvent, PlaybackSnapshot, PlaybackSource, PlaybackSourceClient,
 };
 
 const HISTORY_PAGE_SIZE: i64 = 1_000;
@@ -48,7 +48,7 @@ impl TautulliClient {
                     source,
                     &[
                         ("cmd", "get_history".to_owned()),
-                        ("grouping", "1".to_owned()),
+                        ("grouping", "0".to_owned()),
                         ("include_activity", "0".to_owned()),
                         ("order_column", "date".to_owned()),
                         ("order_dir", "asc".to_owned()),
@@ -163,7 +163,7 @@ impl PlaybackSourceClient for TautulliClient {
             .try_collect::<HashMap<_, _>>()
             .await?;
 
-        let mut aggregates = BTreeMap::<ContentKey, AggregateValues>::new();
+        let mut events = Vec::new();
         let mut matched_history_rows = 0_i64;
         let mut unmatched_history_rows = 0_i64;
 
@@ -178,28 +178,22 @@ impl PlaybackSourceClient for TautulliClient {
             };
 
             matched_history_rows = matched_history_rows.saturating_add(1);
-            let aggregate = aggregates.entry(content_key).or_default();
-            aggregate.play_count = aggregate.play_count.saturating_add(entry.play_count);
-            aggregate.play_duration_seconds = aggregate
-                .play_duration_seconds
-                .saturating_add(entry.play_duration_seconds);
-            aggregate.last_played_at = match (aggregate.last_played_at, entry.last_played_at) {
-                (Some(current), Some(candidate)) => Some(current.max(candidate)),
-                (None, candidate) => candidate,
-                (current, None) => current,
-            };
+
+            // Persist the session only when Tautulli gave us a stable id to
+            // deduplicate on and a usable timestamp. A recognized-but-unstorable
+            // row still counts as matched, so the sync status logic is unchanged.
+            if let (Some(source_row_id), Some(played_at)) = (entry.source_row_id, entry.played_at) {
+                events.push(PlaybackEvent {
+                    key: content_key,
+                    source_row_id,
+                    played_at,
+                    duration_seconds: entry.duration_seconds,
+                });
+            }
         }
 
         Ok(PlaybackSnapshot {
-            aggregates: aggregates
-                .into_iter()
-                .map(|(key, values)| PlaybackAggregate {
-                    key,
-                    play_count: values.play_count,
-                    play_duration_seconds: values.play_duration_seconds,
-                    last_played_at: values.last_played_at,
-                })
-                .collect(),
+            events,
             matched_history_rows,
             unmatched_history_rows,
         })
@@ -255,13 +249,19 @@ struct HistoryPage {
 struct HistoryRow {
     media_type: String,
     #[serde(default, deserialize_with = "deserialize_optional_i64")]
+    row_id: Option<i64>,
+    #[serde(default, deserialize_with = "deserialize_optional_i64")]
+    id: Option<i64>,
+    #[serde(default, deserialize_with = "deserialize_optional_i64")]
+    reference_id: Option<i64>,
+    #[serde(default, deserialize_with = "deserialize_optional_i64")]
     rating_key: Option<i64>,
     #[serde(default, deserialize_with = "deserialize_optional_i64")]
     grandparent_rating_key: Option<i64>,
     #[serde(default, deserialize_with = "deserialize_optional_i64")]
-    group_count: Option<i64>,
-    #[serde(default, deserialize_with = "deserialize_optional_i64")]
     play_duration: Option<i64>,
+    #[serde(default, deserialize_with = "deserialize_optional_i64")]
+    date: Option<i64>,
     #[serde(default, deserialize_with = "deserialize_optional_i64")]
     started: Option<i64>,
     #[serde(default, deserialize_with = "deserialize_optional_i64")]
@@ -270,9 +270,10 @@ struct HistoryRow {
 
 struct HistoryEntry {
     lookup_key: Option<LookupKey>,
-    play_count: i64,
-    play_duration_seconds: i64,
-    last_played_at: Option<DateTime<Utc>>,
+    /// Stable Tautulli history id used to deduplicate sessions across syncs.
+    source_row_id: Option<i64>,
+    played_at: Option<DateTime<Utc>>,
+    duration_seconds: i64,
 }
 
 impl HistoryEntry {
@@ -286,17 +287,23 @@ impl HistoryEntry {
         let lookup_key = rating_key
             .filter(|rating_key| *rating_key > 0)
             .map(|rating_key| LookupKey { kind, rating_key });
-        let last_played_at = row
+        let source_row_id = row
+            .row_id
+            .or(row.id)
+            .or(row.reference_id)
+            .filter(|id| *id > 0);
+        let played_at = row
             .stopped
             .filter(|timestamp| *timestamp > 0)
             .or_else(|| row.started.filter(|timestamp| *timestamp > 0))
+            .or_else(|| row.date.filter(|timestamp| *timestamp > 0))
             .and_then(|timestamp| DateTime::from_timestamp(timestamp, 0));
 
         Some(Self {
             lookup_key,
-            play_count: row.group_count.unwrap_or(1).max(1),
-            play_duration_seconds: row.play_duration.unwrap_or(0).max(0),
-            last_played_at,
+            source_row_id,
+            played_at,
+            duration_seconds: row.play_duration.unwrap_or(0).max(0),
         })
     }
 }
@@ -420,13 +427,6 @@ where
     Option::<Vec<String>>::deserialize(deserializer).map(Option::unwrap_or_default)
 }
 
-#[derive(Default)]
-struct AggregateValues {
-    play_count: i64,
-    play_duration_seconds: i64,
-    last_played_at: Option<DateTime<Utc>>,
-}
-
 #[cfg(test)]
 mod tests {
     use url::Url;
@@ -459,13 +459,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn aggregates_movies_series_and_artists_from_a_base_path() {
+    async fn collects_individual_sessions_for_movies_series_and_artists() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/tautulli/api/v2"))
             .and(query_param("apikey", "secret"))
             .and(query_param("cmd", "get_history"))
-            .and(query_param("grouping", "1"))
+            .and(query_param("grouping", "0"))
             .and(query_param("include_activity", "0"))
             .and(query_param("order_column", "date"))
             .and(query_param("order_dir", "asc"))
@@ -473,12 +473,12 @@ mod tests {
             .and(query_param("length", "1000"))
             .respond_with(
                 ResponseTemplate::new(200).set_body_json(envelope(serde_json::json!({
-                    "recordsFiltered": 4,
+                    "recordsFiltered": 5,
                     "data": [
                         {
                             "media_type": "movie",
+                            "row_id": 1,
                             "rating_key": 10,
-                            "group_count": 2,
                             "play_duration": 120,
                             "started": 100,
                             "stopped": 200,
@@ -486,21 +486,30 @@ mod tests {
                             "ip_address": "not retained"
                         },
                         {
+                            "media_type": "movie",
+                            "row_id": 2,
+                            "rating_key": 10,
+                            "play_duration": 80,
+                            "started": 240,
+                            "stopped": 260
+                        },
+                        {
                             "media_type": "episode",
+                            "row_id": 3,
                             "grandparent_rating_key": 20,
-                            "group_count": 1,
                             "play_duration": 60,
                             "started": 300
                         },
                         {
                             "media_type": "track",
+                            "row_id": 4,
                             "grandparent_rating_key": 30,
-                            "group_count": 1,
                             "play_duration": 30,
                             "stopped": 400
                         },
                         {
                             "media_type": "live",
+                            "row_id": 5,
                             "rating_key": 40
                         }
                     ]
@@ -538,16 +547,32 @@ mod tests {
             .await
             .expect("snapshot");
 
-        assert_eq!(snapshot.matched_history_rows, 3);
+        // Four supported rows are matched (two movie sessions, one episode, one
+        // track); the "live" row is dropped as an unsupported media type.
+        assert_eq!(snapshot.matched_history_rows, 4);
         assert_eq!(snapshot.unmatched_history_rows, 0);
-        assert_eq!(snapshot.aggregates.len(), 3);
-        assert_eq!(snapshot.aggregates[0].key, ContentKey::Movie(42));
-        assert_eq!(snapshot.aggregates[0].play_count, 2);
-        assert_eq!(snapshot.aggregates[1].key, ContentKey::Series(7));
+        assert_eq!(snapshot.events.len(), 4);
+
+        assert_eq!(snapshot.events[0].key, ContentKey::Movie(42));
+        assert_eq!(snapshot.events[0].source_row_id, 1);
+        assert_eq!(snapshot.events[0].duration_seconds, 120);
+        assert_eq!(snapshot.events[0].played_at.timestamp(), 200);
+
+        // A second session of the same movie is its own event (no grouping).
+        assert_eq!(snapshot.events[1].key, ContentKey::Movie(42));
+        assert_eq!(snapshot.events[1].source_row_id, 2);
+        assert_eq!(snapshot.events[1].duration_seconds, 80);
+
+        // Falls back to `started` when `stopped` is absent.
+        assert_eq!(snapshot.events[2].key, ContentKey::Series(7));
+        assert_eq!(snapshot.events[2].source_row_id, 3);
+        assert_eq!(snapshot.events[2].played_at.timestamp(), 300);
+
         assert_eq!(
-            snapshot.aggregates[2].key,
+            snapshot.events[3].key,
             ContentKey::Artist("artist-id".to_owned())
         );
+        assert_eq!(snapshot.events[3].source_row_id, 4);
     }
 
     #[tokio::test]
@@ -562,9 +587,9 @@ mod tests {
                     "data": [
                         {
                             "media_type": "movie",
+                            "row_id": "5",
                             "rating_key": "10",
                             "grandparent_rating_key": "",
-                            "group_count": "2",
                             "play_duration": "120",
                             "started": null,
                             "stopped": "200"
@@ -597,9 +622,11 @@ mod tests {
 
         assert_eq!(snapshot.matched_history_rows, 1);
         assert_eq!(snapshot.unmatched_history_rows, 1);
-        assert_eq!(snapshot.aggregates[0].key, ContentKey::Movie(42));
-        assert_eq!(snapshot.aggregates[0].play_count, 2);
-        assert_eq!(snapshot.aggregates[0].play_duration_seconds, 120);
+        assert_eq!(snapshot.events.len(), 1);
+        assert_eq!(snapshot.events[0].key, ContentKey::Movie(42));
+        assert_eq!(snapshot.events[0].source_row_id, 5);
+        assert_eq!(snapshot.events[0].duration_seconds, 120);
+        assert_eq!(snapshot.events[0].played_at.timestamp(), 200);
     }
 
     #[tokio::test]
@@ -636,6 +663,47 @@ mod tests {
             .expect("snapshot");
         assert_eq!(snapshot.matched_history_rows, 0);
         assert_eq!(snapshot.unmatched_history_rows, 2);
+    }
+
+    #[tokio::test]
+    async fn matched_rows_without_a_stable_id_or_timestamp_are_not_persisted() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v2"))
+            .and(query_param("cmd", "get_history"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(envelope(serde_json::json!({
+                    "recordsFiltered": 2,
+                    "data": [
+                        {"media_type": "movie", "rating_key": 10, "stopped": 200},
+                        {"media_type": "movie", "rating_key": 10, "row_id": 8}
+                    ]
+                }))),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v2"))
+            .and(query_param("cmd", "get_metadata"))
+            .and(query_param("rating_key", "10"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(envelope(serde_json::json!({"guids": ["tmdb://42"]}))),
+            )
+            .mount(&server)
+            .await;
+
+        let snapshot = TautulliClient::new()
+            .expect("client")
+            .collect(&source(&server, ""))
+            .await
+            .expect("snapshot");
+
+        // Both rows resolve to a content item, so they count as matched, but
+        // neither can be stored: one lacks a stable id, the other a timestamp.
+        assert_eq!(snapshot.matched_history_rows, 2);
+        assert_eq!(snapshot.unmatched_history_rows, 0);
+        assert!(snapshot.events.is_empty());
     }
 
     #[tokio::test]
@@ -688,7 +756,13 @@ mod tests {
             .respond_with(
                 ResponseTemplate::new(200).set_body_json(envelope(serde_json::json!({
                     "recordsFiltered": 1001,
-                    "data": [{"media_type": "movie", "rating_key": 10}]
+                    "data": [{
+                        "media_type": "movie",
+                        "row_id": 7,
+                        "rating_key": 10,
+                        "play_duration": 50,
+                        "stopped": 500
+                    }]
                 }))),
             )
             .expect(1)
@@ -711,7 +785,9 @@ mod tests {
             .await
             .expect("snapshot");
         assert_eq!(snapshot.matched_history_rows, 1);
-        assert_eq!(snapshot.aggregates[0].key, ContentKey::Movie(42));
+        assert_eq!(snapshot.events.len(), 1);
+        assert_eq!(snapshot.events[0].key, ContentKey::Movie(42));
+        assert_eq!(snapshot.events[0].source_row_id, 7);
     }
 
     #[tokio::test]
