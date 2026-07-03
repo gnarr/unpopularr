@@ -2,6 +2,14 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [0.2.0](https://github.com/gnarr/unpopularr/compare/764499fe828a763e3e897f63c47cdb83656e43bb..0.2.0) - 2026-07-03
+#### Features
+- (**playback**) persist playback events (#8) - ([873dea1](https://github.com/gnarr/unpopularr/commit/873dea10ef75297318479bc15b9f4be361deaf71)) - Gunnar Cortes
+#### Continuous Integration
+- (**release**) disable build attestations for digest push (#7) - ([764499f](https://github.com/gnarr/unpopularr/commit/764499fe828a763e3e897f63c47cdb83656e43bb)) - Gunnar Cortes
+
+- - -
+
 ## [0.1.1](https://github.com/gnarr/unpopularr/compare/cbe605d01ef4d267b7483dc522a14b6500499f61..0.1.1) - 2026-07-01
 #### Bug Fixes
 - (**docker**) stub crate sources before cargo fetch (#6) - ([cbe605d](https://github.com/gnarr/unpopularr/commit/cbe605d01ef4d267b7483dc522a14b6500499f61)) - Gunnar Cortes
