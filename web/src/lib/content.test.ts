@@ -3,6 +3,7 @@ import type { ArtistItem, MovieItem, SeriesItem } from '../api/types'
 import {
   detailCount,
   detailLabel,
+  detailPath,
   isNeverPlayed,
   playbackAvailable,
   stableId,
@@ -98,5 +99,11 @@ describe('detail helpers and ids', () => {
     expect(stableId(artist)).toBe('mbid-1')
     expect(year(movie)).toBe(1995)
     expect(year(artist)).toBeNull()
+  })
+
+  it('routes only series to a detail path', () => {
+    expect(detailPath(series)).toBe('/series/79126')
+    expect(detailPath(movie)).toBeNull()
+    expect(detailPath(artist)).toBeNull()
   })
 })

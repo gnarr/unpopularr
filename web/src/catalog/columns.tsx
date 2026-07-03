@@ -1,6 +1,7 @@
 import { createColumnHelper, type ColumnDef, type RowData } from '@tanstack/react-table'
+import { Link } from 'react-router'
 import type { ContentItem } from '../api/types'
-import { detailCount, detailLabel, isNeverPlayed, year } from '../lib/content'
+import { detailCount, detailLabel, detailPath, isNeverPlayed, year } from '../lib/content'
 import { absoluteTime, formatBytes, formatDuration, relativeTime } from '../lib/format'
 import { TypeBadge } from '../components/TypeBadge'
 import { InstanceChips } from '../components/InstanceChips'
@@ -26,9 +27,16 @@ export function buildColumns(hasPlayback: boolean): Array<ColumnDef<ContentItem,
       cell: (ctx) => {
         const item = ctx.row.original
         const releaseYear = year(item)
+        const path = detailPath(item)
         return (
           <div className="flex items-center gap-2">
-            <span className="font-medium text-slate-100">{item.displayName}</span>
+            {path ? (
+              <Link to={path} className="font-medium text-slate-100 hover:text-indigo-300 hover:underline">
+                {item.displayName}
+              </Link>
+            ) : (
+              <span className="font-medium text-slate-100">{item.displayName}</span>
+            )}
             {releaseYear !== null && <span className="text-slate-500">({releaseYear})</span>}
           </div>
         )

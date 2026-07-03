@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use axum::{
     Json, Router,
-    extract::State,
+    extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::get,
@@ -29,6 +29,7 @@ pub fn router(state: AppState) -> Router {
     let playback_enabled = state.playback.is_some();
     let api = Router::new()
         .route("/v1/content", get(all_content))
+        .route("/v1/series/{tvdb_id}", get(series_details))
         .route("/v1/sync", get(sync_status).post(start_sync));
     let api = if playback_enabled {
         api.route(
@@ -60,6 +61,14 @@ async fn api_not_found() -> Response {
 async fn all_content(State(state): State<Arc<AppState>>) -> Response {
     match state.catalog.all_content().await {
         Ok(content) => Json(content).into_response(),
+        Err(error) => internal_error(error),
+    }
+}
+
+async fn series_details(State(state): State<Arc<AppState>>, Path(tvdb_id): Path<i64>) -> Response {
+    match state.catalog.series_details(tvdb_id).await {
+        Ok(Some(details)) => Json(details).into_response(),
+        Ok(None) => api_not_found().await,
         Err(error) => internal_error(error),
     }
 }
@@ -471,11 +480,16 @@ mod tests {
     }
 
     async fn minimal_app() -> axum::Router {
+        minimal_app_with_pool().await.0
+    }
+
+    async fn minimal_app_with_pool() -> (axum::Router, sqlx::SqlitePool) {
         let pool = database::test_pool().await;
         let collection_port: Arc<dyn CollectionRepository> =
             Arc::new(SqliteCollectionRepository::new(pool.clone()));
-        let catalog_port: Arc<dyn CatalogRepository> = Arc::new(SqliteCatalogRepository::new(pool));
-        router(AppState {
+        let catalog_port: Arc<dyn CatalogRepository> =
+            Arc::new(SqliteCatalogRepository::new(pool.clone()));
+        let app = router(AppState {
             catalog: CatalogService::new(catalog_port),
             sync: SyncService::new(
                 collection_port,
@@ -483,7 +497,8 @@ mod tests {
                 Arc::new(Vec::new()),
             ),
             playback: None,
-        })
+        });
+        (app, pool)
     }
 
     fn content_type_of(response: &axum::response::Response) -> String {
@@ -539,5 +554,136 @@ mod tests {
             !content_type_of(&response).starts_with("application/json"),
             "non-API paths must not be answered by the API JSON 404 handler"
         );
+    }
+
+    #[tokio::test]
+    async fn series_details_returns_json_not_found_for_unknown_tvdb() {
+        let response = minimal_app()
+            .await
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/series/999")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert!(content_type_of(&response).starts_with("application/json"));
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let error: Value = serde_json::from_slice(&body).expect("error JSON");
+        assert_eq!(error["error"], "not found");
+    }
+
+    #[tokio::test]
+    async fn series_details_aggregates_across_instances_and_reports_playback() {
+        let (app, pool) = minimal_app_with_pool().await;
+        for (id, order) in [("a", 0), ("b", 1)] {
+            sqlx::query(
+                r#"
+                INSERT INTO instances (id, name, kind, config_order, last_successful_sync_at)
+                VALUES (?1, ?1, 'sonarr', ?2, ?3)
+                "#,
+            )
+            .bind(id)
+            .bind(order)
+            .bind(chrono::Utc::now())
+            .execute(&pool)
+            .await
+            .expect("insert instance");
+        }
+        // Same tvdb_id on two instances with different titles/sizes/file counts.
+        sqlx::query(
+            r#"
+            INSERT INTO series_snapshots
+                (instance_id, tvdb_id, title, year, size_on_disk_bytes, file_count)
+            VALUES ('a', 55, 'Show', 2020, 100, 3), ('b', 55, 'Other', 2021, 200, 2)
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("insert series");
+        // Season 2 appears on both instances; the details endpoint sums it.
+        sqlx::query(
+            r#"
+            INSERT INTO series_season_snapshots (instance_id, tvdb_id, season_number, file_count)
+            VALUES ('a', 55, 1, 2), ('a', 55, 2, 1), ('b', 55, 2, 1), ('b', 55, 3, 4)
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("insert seasons");
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/series/55")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let details: Value = serde_json::from_slice(&body).expect("series JSON");
+        assert_eq!(details["displayName"], "Show"); // lowest config_order wins
+        assert_eq!(details["sizeOnDiskBytes"], 300);
+        assert_eq!(details["fileCount"], 5);
+        assert_eq!(details["instances"].as_array().expect("instances").len(), 2);
+        assert_eq!(
+            details["seasons"],
+            serde_json::json!([
+                {"seasonNumber": 1, "fileCount": 2},
+                {"seasonNumber": 2, "fileCount": 2},
+                {"seasonNumber": 3, "fileCount": 4},
+            ])
+        );
+        assert!(details["playback"].is_null());
+
+        sqlx::query(
+            r#"
+            INSERT INTO playback_sources (id, provider, last_successful_sync_at)
+            VALUES ('plex', 'tautulli', ?)
+            "#,
+        )
+        .bind(chrono::Utc::now())
+        .execute(&pool)
+        .await
+        .expect("insert playback source");
+        sqlx::query(
+            r#"
+            INSERT INTO playback_snapshots (
+                source_id, content_type, content_id, play_count,
+                play_duration_seconds, last_played_at
+            )
+            VALUES ('plex', 'series', '55', 9, 1200, ?)
+            "#,
+        )
+        .bind(chrono::Utc::now())
+        .execute(&pool)
+        .await
+        .expect("insert playback snapshot");
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/series/55")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let details: Value = serde_json::from_slice(&body).expect("series JSON");
+        assert_eq!(details["playback"]["playCount"], 9);
+        assert_eq!(details["playback"]["playDurationSeconds"], 1200);
     }
 }

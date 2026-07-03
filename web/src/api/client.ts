@@ -1,11 +1,19 @@
 import { ApiError, request } from './http'
-import type { ContentItem, PlaybackSyncRun, SyncRun } from './types'
+import type { ContentItem, PlaybackSyncRun, SeriesDetails, SyncRun } from './types'
 
 export const PLAYBACK_NOT_CONFIGURED = 'not-configured' as const
 export type PlaybackSyncState = PlaybackSyncRun | null | typeof PLAYBACK_NOT_CONFIGURED
 
 export function getContent(): Promise<ContentItem[]> {
   return request<ContentItem[]>('/api/v1/content').then((data) => data ?? [])
+}
+
+// A missing series 404s; unlike playback that ApiError is surfaced so the detail
+// view can render a "not found" state.
+export async function getSeries(tvdbId: number): Promise<SeriesDetails> {
+  const data = await request<SeriesDetails>(`/api/v1/series/${tvdbId}`)
+  if (data === null) throw new ApiError(502, 'empty series response')
+  return data
 }
 
 export function getSyncStatus(): Promise<SyncRun | null> {
