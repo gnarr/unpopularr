@@ -118,6 +118,26 @@ impl PlaybackRepository for SqlitePlaybackRepository {
 
         let mut transaction = self.pool.begin().await?;
 
+        sqlx::query(
+            r#"
+            UPDATE playback_legacy_snapshots
+            SET covered_until = COALESCE(
+                covered_until,
+                (
+                    SELECT last_successful_sync_at
+                    FROM playback_sources
+                    WHERE id = playback_legacy_snapshots.source_id
+                ),
+                ?
+            )
+            WHERE source_id = ?
+            "#,
+        )
+        .bind(completed_at)
+        .bind(&source.id)
+        .execute(&mut *transaction)
+        .await?;
+
         // Accumulate individual sessions. Re-syncing a Tautulli row that we have
         // already stored is idempotent, so history survives Tautulli purges.
         for event in &snapshot.events {
@@ -145,25 +165,63 @@ impl PlaybackRepository for SqlitePlaybackRepository {
             .await?;
         }
 
-        // Recompute the materialized aggregate that the catalog reads from. This
-        // is self-healing: a stale row is corrected on the next successful sync.
+        // Recompute the materialized aggregate that the catalog reads from.
+        // Legacy aggregate rows preserve pre-events history, while source events
+        // after the legacy cutoff accumulate on every successful sync.
         sqlx::query("DELETE FROM playback_snapshots WHERE source_id = ?")
             .bind(&source.id)
             .execute(&mut *transaction)
             .await?;
         sqlx::query(
             r#"
+            WITH legacy AS (
+                SELECT source_id, content_type, content_id, play_count,
+                       play_duration_seconds, last_played_at, covered_until
+                FROM playback_legacy_snapshots
+                WHERE source_id = ?
+            ),
+            event_snapshots AS (
+                SELECT events.source_id,
+                       events.content_type,
+                       events.content_id,
+                       COUNT(*) AS play_count,
+                       COALESCE(SUM(events.duration_seconds), 0) AS play_duration_seconds,
+                       MAX(events.played_at) AS last_played_at
+                FROM playback_events AS events
+                LEFT JOIN legacy
+                    ON legacy.source_id = events.source_id
+                   AND legacy.content_type = events.content_type
+                   AND legacy.content_id = events.content_id
+                WHERE events.source_id = ?
+                  AND (
+                      legacy.source_id IS NULL
+                      OR events.played_at > legacy.covered_until
+                  )
+                GROUP BY events.source_id, events.content_type, events.content_id
+            ),
+            combined AS (
+                SELECT source_id, content_type, content_id, play_count,
+                       play_duration_seconds, last_played_at
+                FROM legacy
+                UNION ALL
+                SELECT source_id, content_type, content_id, play_count,
+                       play_duration_seconds, last_played_at
+                FROM event_snapshots
+            )
             INSERT INTO playback_snapshots (
                 source_id, content_type, content_id, play_count,
                 play_duration_seconds, last_played_at
             )
             SELECT source_id, content_type, content_id,
-                   COUNT(*), COALESCE(SUM(duration_seconds), 0), MAX(played_at)
-            FROM playback_events
-            WHERE source_id = ?
-            GROUP BY content_type, content_id
+                   SUM(play_count),
+                   COALESCE(SUM(play_duration_seconds), 0),
+                   MAX(last_played_at)
+            FROM combined
+            GROUP BY source_id, content_type, content_id
+            HAVING SUM(play_count) > 0 OR SUM(play_duration_seconds) > 0
             "#,
         )
+        .bind(&source.id)
         .bind(&source.id)
         .execute(&mut *transaction)
         .await?;
@@ -490,6 +548,92 @@ mod tests {
         .await
         .expect("series snapshot");
         assert_eq!(last_played.map(|played| played.timestamp()), Some(400));
+    }
+
+    #[tokio::test]
+    async fn first_event_sync_preserves_legacy_aggregate_without_double_counting() {
+        let pool = database::test_pool().await;
+        let repository = SqlitePlaybackRepository::new(pool.clone());
+        let source = source("plex");
+        let cutoff = DateTime::from_timestamp(250, 0).expect("timestamp");
+        let legacy_last_played = DateTime::from_timestamp(200, 0).expect("timestamp");
+
+        repository
+            .reconcile_source(Some(&source))
+            .await
+            .expect("reconcile");
+        sqlx::query("UPDATE playback_sources SET last_successful_sync_at = ? WHERE id = ?")
+            .bind(cutoff)
+            .bind(&source.id)
+            .execute(&pool)
+            .await
+            .expect("mark previous sync");
+        sqlx::query(
+            r#"
+            INSERT INTO playback_snapshots (
+                source_id, content_type, content_id, play_count,
+                play_duration_seconds, last_played_at
+            )
+            VALUES (?, 'movie', '1', 2, 180, ?)
+            "#,
+        )
+        .bind(&source.id)
+        .bind(legacy_last_played)
+        .execute(&pool)
+        .await
+        .expect("seed legacy snapshot");
+        sqlx::query(
+            r#"
+            INSERT INTO playback_legacy_snapshots (
+                source_id, content_type, content_id, play_count,
+                play_duration_seconds, last_played_at, covered_until
+            )
+            VALUES (?, 'movie', '1', 2, 180, ?, ?)
+            "#,
+        )
+        .bind(&source.id)
+        .bind(legacy_last_played)
+        .bind(cutoff)
+        .execute(&pool)
+        .await
+        .expect("seed legacy baseline");
+
+        let run = repository
+            .create_sync_run(&source, PlaybackSyncTrigger::Manual, Utc::now())
+            .await
+            .expect("create run");
+        repository
+            .store_events(
+                run.id,
+                &source,
+                &snapshot(vec![
+                    event(1, ContentKey::Movie(1), 100, 120),
+                    event(2, ContentKey::Movie(1), 300, 60),
+                ]),
+                PlaybackSyncStatus::Succeeded,
+                Utc::now(),
+            )
+            .await
+            .expect("store");
+
+        let event_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM playback_events")
+            .fetch_one(&pool)
+            .await
+            .expect("count events");
+        assert_eq!(event_count, 2);
+
+        let (play_count, duration, last_played): (i64, i64, Option<DateTime<Utc>>) =
+            sqlx::query_as(
+                "SELECT play_count, play_duration_seconds, last_played_at \
+                 FROM playback_snapshots \
+                 WHERE content_type = 'movie' AND content_id = '1'",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("snapshot row");
+        assert_eq!(play_count, 3);
+        assert_eq!(duration, 240);
+        assert_eq!(last_played.map(|played| played.timestamp()), Some(300));
     }
 
     #[tokio::test]
