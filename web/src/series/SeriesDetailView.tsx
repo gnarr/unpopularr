@@ -139,6 +139,52 @@ function SeriesDetail({ data }: { data: SeriesDetails }) {
           )}
         </div>
       </section>
+
+      {data.instanceDetails.length > 1 && (
+        <section className="rounded-lg border border-slate-800 bg-slate-900/40">
+          <header className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
+            <h2 className="text-sm font-semibold text-slate-100">Instances</h2>
+          </header>
+          <div className="p-4">
+            <table className="w-full border-separate border-spacing-0 text-sm">
+              <thead>
+                <tr>
+                  <th className="border-b border-slate-800 px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-400">
+                    Instance
+                  </th>
+                  <th className="border-b border-slate-800 px-3 py-2 text-right text-xs font-semibold uppercase tracking-wide text-slate-400">
+                    Size
+                  </th>
+                  <th className="border-b border-slate-800 px-3 py-2 text-right text-xs font-semibold uppercase tracking-wide text-slate-400">
+                    Files
+                  </th>
+                  <th className="border-b border-slate-800 px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-400">
+                    Seasons
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.instanceDetails.map((detail) => (
+                  <tr key={detail.instance.id} className="hover:bg-slate-800/30">
+                    <td className="border-b border-slate-800/60 px-3 py-1.5 text-slate-200">
+                      {detail.instance.name}
+                    </td>
+                    <td className="border-b border-slate-800/60 px-3 py-1.5 text-right tabular-nums">
+                      {formatBytes(detail.sizeOnDiskBytes)}
+                    </td>
+                    <td className="border-b border-slate-800/60 px-3 py-1.5 text-right tabular-nums">
+                      {detail.fileCount.toLocaleString()}
+                    </td>
+                    <td className="border-b border-slate-800/60 px-3 py-1.5 text-slate-400">
+                      {detail.seasonNumbers.length > 0 ? detail.seasonNumbers.join(', ') : '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
     </div>
   )
 }

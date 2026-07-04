@@ -50,12 +50,14 @@ function useRefreshContentAfterSync() {
       ? playbackData.status
       : undefined
 
-  useTerminalTransition(syncStatus, () =>
-    queryClient.invalidateQueries({ queryKey: queryKeys.content }),
-  )
-  useTerminalTransition(playbackStatus, () =>
-    queryClient.invalidateQueries({ queryKey: queryKeys.content }),
-  )
+  // A completed sync lands fresh snapshots/playback, so refresh both the catalog
+  // list and any open series detail page (cached under the ['series', id] prefix).
+  const refresh = () => {
+    queryClient.invalidateQueries({ queryKey: queryKeys.content })
+    queryClient.invalidateQueries({ queryKey: queryKeys.seriesAll })
+  }
+  useTerminalTransition(syncStatus, refresh)
+  useTerminalTransition(playbackStatus, refresh)
 }
 
 function useTerminalTransition(status: SyncStatus | undefined, onTerminal: () => void) {
