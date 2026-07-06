@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { useNavigate } from 'react-router'
 import { useContent } from '../api/queries'
 import type { ContentType } from '../api/types'
 import { playbackAvailable } from '../lib/content'
@@ -12,7 +13,8 @@ import { CatalogToolbar } from './CatalogToolbar'
 
 const ALL_TYPES: ContentType[] = ['movie', 'series', 'artist']
 
-export function CatalogView({ onGoToActivity }: { onGoToActivity: () => void }) {
+export function CatalogView() {
+  const navigate = useNavigate()
   const content = useContent()
   const [search, setSearch] = useState('')
   const [types, setTypes] = useState<Set<ContentType>>(() => new Set(ALL_TYPES))
@@ -55,7 +57,7 @@ export function CatalogView({ onGoToActivity }: { onGoToActivity: () => void }) 
       <EmptyState
         title="No content imported yet"
         description="Run a library sync to import your Sonarr, Radarr, and Lidarr content."
-        action={<Button onClick={onGoToActivity}>Go to Activity</Button>}
+        action={<Button onClick={() => navigate('/activity')}>Go to Activity</Button>}
       />
     )
   }

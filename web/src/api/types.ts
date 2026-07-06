@@ -45,6 +45,33 @@ export interface ArtistItem extends ContentBase {
 export type ContentItem = MovieItem | SeriesItem | ArtistItem
 export type ContentType = ContentItem['contentType']
 
+// Per-series detail (GET /api/v1/series/{tvdbId}). Mirrors the backend
+// `SeriesDetails` serde struct; the season/instance breakdowns are data the flat
+// catalog list discards.
+export interface SeriesSeasonDetail {
+  seasonNumber: number
+  fileCount: number
+}
+
+export interface SeriesInstanceDetail {
+  instance: InstanceReference
+  sizeOnDiskBytes: number
+  fileCount: number
+  seasonNumbers: number[]
+}
+
+export interface SeriesDetails {
+  displayName: string
+  tvdbId: number
+  year: number
+  sizeOnDiskBytes: number
+  fileCount: number
+  instances: InstanceReference[]
+  seasons: SeriesSeasonDetail[]
+  instanceDetails: SeriesInstanceDetail[]
+  playback: PlaybackMetrics | null
+}
+
 export type SyncTrigger = 'startup' | 'scheduled' | 'manual'
 export type SyncStatus = 'running' | 'succeeded' | 'partial' | 'failed'
 export type InstanceKind = 'sonarr' | 'radarr' | 'lidarr'

@@ -15,6 +15,11 @@ export function rowId(item: ContentItem): string {
   return `${item.contentType}:${stableId(item)}`
 }
 
+// The detail-page route for an item, or null for types without one yet.
+export function detailPath(item: ContentItem): string | null {
+  return item.contentType === 'series' ? `/series/${item.tvdbId}` : null
+}
+
 export function year(item: ContentItem): number | null {
   return item.contentType === 'artist' ? null : item.year
 }

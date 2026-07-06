@@ -3,8 +3,10 @@ import {
   PLAYBACK_NOT_CONFIGURED,
   getContent,
   getPlaybackSyncStatus,
+  getSeries,
   getSyncStatus,
 } from './client'
+import { ApiError } from './http'
 import { queryKeys } from './queryKeys'
 
 const POLL_INTERVAL_MS = 2000
@@ -14,6 +16,18 @@ export function useContent() {
     queryKey: queryKeys.content,
     queryFn: getContent,
     staleTime: 60_000,
+  })
+}
+
+export function useSeries(tvdbId: number) {
+  return useQuery({
+    queryKey: queryKeys.series(tvdbId),
+    queryFn: () => getSeries(tvdbId),
+    staleTime: 60_000,
+    enabled: Number.isFinite(tvdbId),
+    // A 404 is a definitive "no such series" — don't burn the default retry on it.
+    retry: (failureCount, error) =>
+      error instanceof ApiError && error.status === 404 ? false : failureCount < 1,
   })
 }
 

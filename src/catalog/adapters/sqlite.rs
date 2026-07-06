@@ -7,7 +7,7 @@ use sqlx::{Row, SqlitePool};
 
 use crate::catalog::{
     ArtistSource, CatalogPlayback, CatalogRepository, CatalogSources, InstanceReference,
-    MovieSource, PlaybackMetrics, SeriesSource,
+    MovieSource, PlaybackMetrics, SeriesDetailsSources, SeriesSeasonFiles, SeriesSource,
 };
 
 #[derive(Clone)]
@@ -216,6 +216,114 @@ impl CatalogRepository for SqliteCatalogRepository {
             artists,
             playback,
         })
+    }
+
+    async fn load_series(&self, tvdb_id: i64) -> Result<Option<SeriesDetailsSources>> {
+        let series_rows = sqlx::query(
+            r#"
+            SELECT s.tvdb_id, s.title, s.year, s.size_on_disk_bytes, s.file_count,
+                   i.id AS instance_id, i.name AS instance_name, i.config_order,
+                   i.last_successful_sync_at
+            FROM series_snapshots s
+            JOIN instances i ON i.id = s.instance_id
+            WHERE s.tvdb_id = ?1
+            ORDER BY i.config_order
+            "#,
+        )
+        .bind(tvdb_id)
+        .fetch_all(&self.pool)
+        .await?;
+        if series_rows.is_empty() {
+            return Ok(None);
+        }
+
+        // Unlike load_sources, this query keeps file_count — the per-season
+        // breakdown is exactly what the details page exists to expose.
+        let season_rows = sqlx::query(
+            r#"
+            SELECT instance_id, season_number, file_count
+            FROM series_season_snapshots
+            WHERE tvdb_id = ?1
+            ORDER BY season_number
+            "#,
+        )
+        .bind(tvdb_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut seasons = Vec::with_capacity(season_rows.len());
+        let mut season_numbers_by_instance = HashMap::<String, Vec<i64>>::new();
+        for row in season_rows {
+            let instance_id: String = row.try_get("instance_id")?;
+            let season_number: i64 = row.try_get("season_number")?;
+            seasons.push(SeriesSeasonFiles {
+                season_number,
+                file_count: row.try_get("file_count")?,
+            });
+            season_numbers_by_instance
+                .entry(instance_id)
+                .or_default()
+                .push(season_number);
+        }
+
+        let playback_available = sqlx::query_scalar::<_, bool>(
+            r#"
+            SELECT EXISTS(
+                SELECT 1
+                FROM playback_sources
+                WHERE last_successful_sync_at IS NOT NULL
+            )
+            "#,
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        let playback = if playback_available {
+            sqlx::query(
+                r#"
+                SELECT play_count, play_duration_seconds, last_played_at
+                FROM playback_snapshots
+                WHERE content_type = 'series' AND content_id = ?1
+                "#,
+            )
+            .bind(tvdb_id.to_string())
+            .fetch_optional(&self.pool)
+            .await?
+            .map(|row| {
+                Ok::<_, anyhow::Error>(PlaybackMetrics {
+                    play_count: row.try_get("play_count")?,
+                    play_duration_seconds: row.try_get("play_duration_seconds")?,
+                    last_played_at: row.try_get("last_played_at")?,
+                })
+            })
+            .transpose()?
+        } else {
+            None
+        };
+
+        let instances = series_rows
+            .into_iter()
+            .map(|row| {
+                let instance_id: String = row.try_get("instance_id")?;
+                Ok(SeriesSource {
+                    tvdb_id: row.try_get("tvdb_id")?,
+                    title: row.try_get("title")?,
+                    year: row.try_get("year")?,
+                    size_on_disk_bytes: row.try_get("size_on_disk_bytes")?,
+                    file_count: row.try_get("file_count")?,
+                    season_numbers: season_numbers_by_instance
+                        .remove(&instance_id)
+                        .unwrap_or_default(),
+                    instance: instance_reference_with_id(&row, instance_id)?,
+                    config_order: row.try_get("config_order")?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok(Some(SeriesDetailsSources {
+            instances,
+            seasons,
+            playback_available,
+            playback,
+        }))
     }
 }
 
