@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [0.3.0](https://github.com/gnarr/unpopularr/compare/ca78a3f2d16949e68fbdfdb6c4806bfe37d518b4..0.3.0) - 2026-07-06
+#### Features
+- (**catalog**) add series details view (#9) - ([ca78a3f](https://github.com/gnarr/unpopularr/commit/ca78a3f2d16949e68fbdfdb6c4806bfe37d518b4)) - Gunnar Cortes
+
+- - -
+
 ## [0.2.0](https://github.com/gnarr/unpopularr/compare/764499fe828a763e3e897f63c47cdb83656e43bb..0.2.0) - 2026-07-03
 #### Features
 - (**playback**) persist playback events (#8) - ([873dea1](https://github.com/gnarr/unpopularr/commit/873dea10ef75297318479bc15b9f4be361deaf71)) - Gunnar Cortes
