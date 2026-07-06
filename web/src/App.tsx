@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Outlet, Route, Routes } from 'react-router'
+import { Navigate, Outlet, Route, Routes } from 'react-router'
 import { Header } from './components/Header'
 import { CatalogView } from './catalog/CatalogView'
 import { ActivityView } from './activity/ActivityView'
@@ -17,6 +17,7 @@ export default function App() {
         <Route index element={<CatalogView />} />
         <Route path="activity" element={<ActivityView />} />
         <Route path="series/:tvdbId" element={<SeriesDetailView />} />
+        <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>
   )
