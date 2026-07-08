@@ -6,6 +6,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# The backend serves the SPA from web/dist, which is not committed (only its
+# .gitkeep is). Build it every run so the tests always exercise the current
+# sources; warm rebuilds take about a second.
+[ -d web/node_modules ] || npm ci --prefix web
+npm run build --prefix web
+
 node e2e/mock-arr.mjs &
 MOCK_PID=$!
 

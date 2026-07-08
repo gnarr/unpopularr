@@ -140,8 +140,9 @@ impl PlaybackRepository for SqlitePlaybackRepository {
 
         // Accumulate individual sessions. Re-syncing a Tautulli row that we have
         // already stored is idempotent, so history survives Tautulli purges. The
-        // conflict update also backfills season/episode positions onto rows
-        // stored before those columns existed.
+        // conflict update backfills season/episode positions onto rows stored
+        // before those columns existed, but never clears stored positions when
+        // Tautulli later omits the indices for the same row.
         for event in &snapshot.events {
             sqlx::query(
                 r#"
@@ -155,8 +156,8 @@ impl PlaybackRepository for SqlitePlaybackRepository {
                     content_id = excluded.content_id,
                     played_at = excluded.played_at,
                     duration_seconds = excluded.duration_seconds,
-                    season_number = excluded.season_number,
-                    episode_number = excluded.episode_number
+                    season_number = COALESCE(excluded.season_number, season_number),
+                    episode_number = COALESCE(excluded.episode_number, episode_number)
                 "#,
             )
             .bind(&source.id)
@@ -690,19 +691,37 @@ mod tests {
             .await
             .expect("second store");
 
-        let (season, episode): (Option<i64>, Option<i64>) = sqlx::query_as(
-            "SELECT season_number, episode_number FROM playback_events WHERE source_row_id = 1",
-        )
-        .fetch_one(&pool)
-        .await
-        .expect("row 1");
-        assert_eq!(season, Some(1));
-        assert_eq!(episode, Some(3));
+        let positions = || async {
+            sqlx::query_as::<_, (Option<i64>, Option<i64>)>(
+                "SELECT season_number, episode_number FROM playback_events WHERE source_row_id = 1",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("row 1")
+        };
+        assert_eq!(positions().await, (Some(1), Some(3)));
         let event_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM playback_events")
             .fetch_one(&pool)
             .await
             .expect("count events");
         assert_eq!(event_count, 1);
+
+        // A later sync that omits the indices must not clear stored positions.
+        let third = repository
+            .create_sync_run(&source, PlaybackSyncTrigger::Manual, Utc::now())
+            .await
+            .expect("third run");
+        repository
+            .store_events(
+                third.id,
+                &source,
+                &snapshot(vec![event(1, ContentKey::Series(2), 100, 60)]),
+                PlaybackSyncStatus::Succeeded,
+                Utc::now(),
+            )
+            .await
+            .expect("third store");
+        assert_eq!(positions().await, (Some(1), Some(3)));
     }
 
     #[tokio::test]
