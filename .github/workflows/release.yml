@@ -390,7 +390,13 @@ jobs:
           provenance: false
           sbom: false
           cache-from: type=gha,scope=${{ matrix.artifact }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.artifact }}
+          # Cache export is a best-effort optimization: the image has already been
+          # built and pushed by the time buildx exports the cache. GitHub's Actions
+          # Cache is intermittently unavailable / throttled / over the 10GB repo
+          # quota, and a failed export ("failed to reserve cache") would otherwise
+          # exit non-zero and fail an already-successful build. ignore-error keeps
+          # cache-export failures from gating a release.
+          cache-to: type=gha,mode=max,scope=${{ matrix.artifact }},ignore-error=true
 
       - name: Build and push GHCR digest image
         id: build_ghcr
