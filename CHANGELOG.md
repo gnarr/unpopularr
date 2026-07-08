@@ -2,6 +2,14 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [0.4.0](https://github.com/gnarr/unpopularr/compare/a302e5cc02822163eb2c94dd8e35c7d844aff3f1..0.4.0) - 2026-07-08
+#### Features
+- (**series**) add episode watch matrix (#11) - ([6874dab](https://github.com/gnarr/unpopularr/commit/6874dab77bec9f0c332b8c4b1fd9c807b057b07f)) - Gunnar Cortes
+#### Continuous Integration
+- (**release**) ignore gha cache export errors - ([a302e5c](https://github.com/gnarr/unpopularr/commit/a302e5cc02822163eb2c94dd8e35c7d844aff3f1)) - Gunnar Cortes
+
+- - -
+
 ## [0.3.0](https://github.com/gnarr/unpopularr/compare/ca78a3f2d16949e68fbdfdb6c4806bfe37d518b4..0.3.0) - 2026-07-06
 #### Features
 - (**catalog**) add series details view (#9) - ([ca78a3f](https://github.com/gnarr/unpopularr/commit/ca78a3f2d16949e68fbdfdb6c4806bfe37d518b4)) - Gunnar Cortes
