@@ -24,9 +24,20 @@ describe('getSeries', () => {
       sizeOnDiskBytes: 200,
       fileCount: 60,
       instances: [],
-      seasons: [{ seasonNumber: 1, fileCount: 13 }],
+      seasons: [
+        {
+          seasonNumber: 1,
+          fileCount: 13,
+          episodeCount: 13,
+          episodesWithFiles: 13,
+          sizeOnDiskBytes: 200,
+          playback: null,
+          episodes: [],
+        },
+      ],
       instanceDetails: [],
       playback: null,
+      unattributedPlayCount: null,
     }
     const fetchMock = stubFetch({ status: 200, ok: true, jsonImpl: () => Promise.resolve(details) })
 

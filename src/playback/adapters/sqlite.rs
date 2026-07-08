@@ -139,20 +139,24 @@ impl PlaybackRepository for SqlitePlaybackRepository {
         .await?;
 
         // Accumulate individual sessions. Re-syncing a Tautulli row that we have
-        // already stored is idempotent, so history survives Tautulli purges.
+        // already stored is idempotent, so history survives Tautulli purges. The
+        // conflict update also backfills season/episode positions onto rows
+        // stored before those columns existed.
         for event in &snapshot.events {
             sqlx::query(
                 r#"
                 INSERT INTO playback_events (
                     source_id, source_row_id, content_type, content_id,
-                    played_at, duration_seconds
+                    played_at, duration_seconds, season_number, episode_number
                 )
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(source_id, source_row_id) DO UPDATE SET
                     content_type = excluded.content_type,
                     content_id = excluded.content_id,
                     played_at = excluded.played_at,
-                    duration_seconds = excluded.duration_seconds
+                    duration_seconds = excluded.duration_seconds,
+                    season_number = excluded.season_number,
+                    episode_number = excluded.episode_number
                 "#,
             )
             .bind(&source.id)
@@ -161,6 +165,8 @@ impl PlaybackRepository for SqlitePlaybackRepository {
             .bind(event.key.content_id())
             .bind(event.played_at)
             .bind(event.duration_seconds)
+            .bind(event.season_number)
+            .bind(event.episode_number)
             .execute(&mut *transaction)
             .await?;
         }
@@ -392,6 +398,8 @@ mod tests {
             source_row_id,
             played_at: DateTime::from_timestamp(played_at_secs, 0).expect("timestamp"),
             duration_seconds,
+            season_number: None,
+            episode_number: None,
         }
     }
 
@@ -634,6 +642,67 @@ mod tests {
         assert_eq!(play_count, 3);
         assert_eq!(duration, 240);
         assert_eq!(last_played.map(|played| played.timestamp()), Some(300));
+    }
+
+    #[tokio::test]
+    async fn stores_episode_positions_and_backfills_on_resync() {
+        let pool = database::test_pool().await;
+        let repository = SqlitePlaybackRepository::new(pool.clone());
+        let source = source("plex");
+        repository
+            .reconcile_source(Some(&source))
+            .await
+            .expect("reconcile");
+
+        // First sync stores the row without positions (pre-migration shape).
+        let first = repository
+            .create_sync_run(&source, PlaybackSyncTrigger::Manual, Utc::now())
+            .await
+            .expect("first run");
+        repository
+            .store_events(
+                first.id,
+                &source,
+                &snapshot(vec![event(1, ContentKey::Series(2), 100, 60)]),
+                PlaybackSyncStatus::Succeeded,
+                Utc::now(),
+            )
+            .await
+            .expect("first store");
+
+        // Re-syncing the same Tautulli row with positions backfills in place.
+        let second = repository
+            .create_sync_run(&source, PlaybackSyncTrigger::Manual, Utc::now())
+            .await
+            .expect("second run");
+        repository
+            .store_events(
+                second.id,
+                &source,
+                &snapshot(vec![PlaybackEvent {
+                    season_number: Some(1),
+                    episode_number: Some(3),
+                    ..event(1, ContentKey::Series(2), 100, 60)
+                }]),
+                PlaybackSyncStatus::Succeeded,
+                Utc::now(),
+            )
+            .await
+            .expect("second store");
+
+        let (season, episode): (Option<i64>, Option<i64>) = sqlx::query_as(
+            "SELECT season_number, episode_number FROM playback_events WHERE source_row_id = 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("row 1");
+        assert_eq!(season, Some(1));
+        assert_eq!(episode, Some(3));
+        let event_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM playback_events")
+            .fetch_one(&pool)
+            .await
+            .expect("count events");
+        assert_eq!(event_count, 1);
     }
 
     #[tokio::test]

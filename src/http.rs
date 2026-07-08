@@ -616,6 +616,23 @@ mod tests {
         .execute(&pool)
         .await
         .expect("insert seasons");
+        // S01E01 exists on both instances (sizes summed, existence OR'd);
+        // S01E02 is known but missing everywhere.
+        sqlx::query(
+            r#"
+            INSERT INTO series_episode_snapshots (
+                instance_id, tvdb_id, season_number, episode_number,
+                title, air_date_utc, has_file, size_on_disk_bytes
+            )
+            VALUES
+                ('a', 55, 1, 1, 'Pilot', '2020-01-01T00:00:00Z', 1, 100),
+                ('a', 55, 1, 2, 'Second', '2020-01-08T00:00:00Z', 0, 0),
+                ('b', 55, 1, 1, 'Pilot (4K)', '2020-01-01T00:00:00Z', 1, 400)
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("insert episodes");
 
         let response = app
             .clone()
@@ -637,14 +654,41 @@ mod tests {
         assert_eq!(details["fileCount"], 5);
         assert_eq!(details["instances"].as_array().expect("instances").len(), 2);
         assert_eq!(
-            details["seasons"],
-            serde_json::json!([
-                {"seasonNumber": 1, "fileCount": 2},
-                {"seasonNumber": 2, "fileCount": 2},
-                {"seasonNumber": 3, "fileCount": 4},
-            ])
+            details["seasons"][0],
+            serde_json::json!({
+                "seasonNumber": 1,
+                "fileCount": 2,
+                "episodeCount": 2,
+                "episodesWithFiles": 1,
+                "sizeOnDiskBytes": 500,
+                "playback": null,
+                "episodes": [
+                    {
+                        "episodeNumber": 1,
+                        "title": "Pilot",
+                        "airDateUtc": "2020-01-01T00:00:00Z",
+                        "hasFile": true,
+                        "sizeOnDiskBytes": 500,
+                        "playback": null,
+                    },
+                    {
+                        "episodeNumber": 2,
+                        "title": "Second",
+                        "airDateUtc": "2020-01-08T00:00:00Z",
+                        "hasFile": false,
+                        "sizeOnDiskBytes": 0,
+                        "playback": null,
+                    },
+                ],
+            })
         );
+        // Seasons without episode rows still appear, with empty episode lists.
+        assert_eq!(details["seasons"][1]["seasonNumber"], 2);
+        assert_eq!(details["seasons"][1]["fileCount"], 2);
+        assert_eq!(details["seasons"][1]["episodes"], serde_json::json!([]));
+        assert_eq!(details["seasons"][2]["seasonNumber"], 3);
         assert!(details["playback"].is_null());
+        assert!(details["unattributedPlayCount"].is_null());
 
         sqlx::query(
             r#"
@@ -669,6 +713,22 @@ mod tests {
         .execute(&pool)
         .await
         .expect("insert playback snapshot");
+        // One event carries its episode position, one predates position capture.
+        sqlx::query(
+            r#"
+            INSERT INTO playback_events (
+                source_id, source_row_id, content_type, content_id,
+                played_at, duration_seconds, season_number, episode_number
+            )
+            VALUES
+                ('plex', 1, 'series', '55', ?1, 600, 1, 1),
+                ('plex', 2, 'series', '55', ?1, 300, NULL, NULL)
+            "#,
+        )
+        .bind(chrono::Utc::now())
+        .execute(&pool)
+        .await
+        .expect("insert playback events");
 
         let response = app
             .oneshot(
@@ -685,5 +745,13 @@ mod tests {
         let details: Value = serde_json::from_slice(&body).expect("series JSON");
         assert_eq!(details["playback"]["playCount"], 9);
         assert_eq!(details["playback"]["playDurationSeconds"], 1200);
+        let season = &details["seasons"][0];
+        assert_eq!(season["playback"]["playCount"], 1);
+        assert_eq!(season["playback"]["playDurationSeconds"], 600);
+        assert_eq!(season["episodes"][0]["playback"]["playCount"], 1);
+        // Known but never-played episodes report zeroed metrics, not null.
+        assert_eq!(season["episodes"][1]["playback"]["playCount"], 0);
+        // 9 series plays, 1 attributed to an episode cell.
+        assert_eq!(details["unattributedPlayCount"], 8);
     }
 }

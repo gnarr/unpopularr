@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -88,13 +88,48 @@ pub struct SeriesSeasonFiles {
     pub file_count: i64,
 }
 
+/// One episode's on-disk state for a single instance, as read from
+/// `series_episode_snapshots`. Rows arrive ordered by instance `config_order`;
+/// [`aggregate_series`] merges duplicates (first instance wins metadata).
+#[derive(Clone, Debug)]
+pub struct SeriesEpisodeFile {
+    pub season_number: i64,
+    pub episode_number: i64,
+    pub title: String,
+    pub air_date_utc: Option<DateTime<Utc>>,
+    pub has_file: bool,
+    pub size_on_disk_bytes: i64,
+}
+
+/// Read-time playback aggregate for one (season, episode) of a series,
+/// computed from `playback_events` rows that carry episode positions.
+#[derive(Clone, Debug)]
+pub struct SeriesEpisodePlayback {
+    pub season_number: i64,
+    pub episode_number: i64,
+    pub metrics: PlaybackMetrics,
+}
+
 /// Raw per-instance material for a single series, straight from the repository
 /// before aggregation into [`SeriesDetails`].
 #[derive(Clone, Debug, Default)]
 pub struct SeriesDetailsSources {
     pub instances: Vec<SeriesSource>,
     pub seasons: Vec<SeriesSeasonFiles>,
+    pub episodes: Vec<SeriesEpisodeFile>,
+    pub episode_playback: Vec<SeriesEpisodePlayback>,
     pub playback_available: bool,
+    pub playback: Option<PlaybackMetrics>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SeriesEpisodeDetail {
+    pub episode_number: i64,
+    pub title: String,
+    pub air_date_utc: Option<DateTime<Utc>>,
+    pub has_file: bool,
+    pub size_on_disk_bytes: i64,
     pub playback: Option<PlaybackMetrics>,
 }
 
@@ -103,6 +138,13 @@ pub struct SeriesDetailsSources {
 pub struct SeriesSeasonDetail {
     pub season_number: i64,
     pub file_count: i64,
+    /// Distinct episodes known to Sonarr, aired or not. 0 when the episode
+    /// snapshot predates episode collection.
+    pub episode_count: i64,
+    pub episodes_with_files: i64,
+    pub size_on_disk_bytes: i64,
+    pub playback: Option<PlaybackMetrics>,
+    pub episodes: Vec<SeriesEpisodeDetail>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -128,6 +170,10 @@ pub struct SeriesDetails {
     pub seasons: Vec<SeriesSeasonDetail>,
     pub instance_details: Vec<SeriesInstanceDetail>,
     pub playback: Option<PlaybackMetrics>,
+    /// Series-level plays not attributable to an episode cell: legacy
+    /// aggregates, events without episode positions, and specials. `None` when
+    /// playback is unavailable.
+    pub unattributed_play_count: Option<i64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -345,13 +391,101 @@ pub fn aggregate_series(mut sources: SeriesDetailsSources) -> Option<SeriesDetai
     for season in sources.seasons {
         *season_files.entry(season.season_number).or_default() += season.file_count;
     }
-    let seasons = season_files
+
+    // First instance wins title/air date (rows arrive ordered by config_order);
+    // file presence is OR'd and sizes are summed, like the series totals.
+    let mut episode_map = BTreeMap::<i64, BTreeMap<i64, EpisodeAggregate>>::new();
+    for episode in sources.episodes {
+        match episode_map
+            .entry(episode.season_number)
+            .or_default()
+            .entry(episode.episode_number)
+        {
+            Entry::Vacant(slot) => {
+                slot.insert(EpisodeAggregate {
+                    title: episode.title,
+                    air_date_utc: episode.air_date_utc,
+                    has_file: episode.has_file,
+                    size_on_disk_bytes: episode.size_on_disk_bytes,
+                });
+            }
+            Entry::Occupied(mut slot) => {
+                let aggregate = slot.get_mut();
+                aggregate.has_file |= episode.has_file;
+                aggregate.size_on_disk_bytes += episode.size_on_disk_bytes;
+            }
+        }
+    }
+
+    let episode_playback = sources
+        .episode_playback
         .into_iter()
-        .map(|(season_number, file_count)| SeriesSeasonDetail {
-            season_number,
-            file_count,
+        .map(|playback| {
+            (
+                (playback.season_number, playback.episode_number),
+                playback.metrics,
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    // Union with the season file counts so a database synced before episode
+    // collection existed still lists its seasons (with an empty episode list).
+    let season_numbers = season_files
+        .keys()
+        .chain(episode_map.keys())
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let mut attributed_play_count = 0;
+    let seasons = season_numbers
+        .into_iter()
+        .map(|season_number| {
+            let mut episodes_with_files = 0;
+            let mut season_size_bytes = 0;
+            let mut season_playback = PlaybackMetrics::never_played();
+            let episodes = episode_map
+                .remove(&season_number)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(episode_number, aggregate)| {
+                    let metrics = episode_playback.get(&(season_number, episode_number));
+                    if let Some(metrics) = metrics {
+                        attributed_play_count += metrics.play_count;
+                        season_playback.play_count += metrics.play_count;
+                        season_playback.play_duration_seconds += metrics.play_duration_seconds;
+                        season_playback.last_played_at =
+                            season_playback.last_played_at.max(metrics.last_played_at);
+                    }
+                    episodes_with_files += i64::from(aggregate.has_file);
+                    season_size_bytes += aggregate.size_on_disk_bytes;
+                    SeriesEpisodeDetail {
+                        episode_number,
+                        title: aggregate.title,
+                        air_date_utc: aggregate.air_date_utc,
+                        has_file: aggregate.has_file,
+                        size_on_disk_bytes: aggregate.size_on_disk_bytes,
+                        playback: playback_metrics(sources.playback_available, metrics),
+                    }
+                })
+                .collect::<Vec<_>>();
+
+            SeriesSeasonDetail {
+                season_number,
+                file_count: season_files.get(&season_number).copied().unwrap_or(0),
+                episode_count: i64::try_from(episodes.len()).unwrap_or(i64::MAX),
+                episodes_with_files,
+                size_on_disk_bytes: season_size_bytes,
+                playback: playback_metrics(sources.playback_available, Some(&season_playback)),
+                episodes,
+            }
         })
         .collect();
+
+    let playback = playback_metrics(sources.playback_available, sources.playback.as_ref());
+    // Clamped: re-synced events inside the legacy aggregate's covered window can
+    // be counted both per episode and in the series total's legacy share.
+    let unattributed_play_count = playback
+        .as_ref()
+        .map(|metrics| (metrics.play_count - attributed_play_count).max(0));
 
     Some(SeriesDetails {
         display_name,
@@ -362,8 +496,16 @@ pub fn aggregate_series(mut sources: SeriesDetailsSources) -> Option<SeriesDetai
         instances,
         seasons,
         instance_details,
-        playback: playback_metrics(sources.playback_available, sources.playback.as_ref()),
+        playback,
+        unattributed_play_count,
     })
+}
+
+struct EpisodeAggregate {
+    title: String,
+    air_date_utc: Option<DateTime<Utc>>,
+    has_file: bool,
+    size_on_disk_bytes: i64,
 }
 
 fn playback_metrics(available: bool, metrics: Option<&PlaybackMetrics>) -> Option<PlaybackMetrics> {
@@ -407,8 +549,8 @@ mod tests {
 
     use super::{
         ArtistSource, CatalogPlayback, CatalogSources, ContentItem, InstanceReference, MovieSource,
-        PlaybackMetrics, SeriesDetailsSources, SeriesSeasonDetail, SeriesSeasonFiles, SeriesSource,
-        aggregate, aggregate_series,
+        PlaybackMetrics, SeriesDetailsSources, SeriesEpisodeFile, SeriesEpisodePlayback,
+        SeriesSeasonDetail, SeriesSeasonFiles, SeriesSource, aggregate, aggregate_series,
     };
 
     fn instance(id: &str, name: &str) -> InstanceReference {
@@ -643,8 +785,7 @@ mod tests {
                     file_count: 4,
                 },
             ],
-            playback_available: false,
-            playback: None,
+            ..SeriesDetailsSources::default()
         })
         .expect("series details");
 
@@ -652,21 +793,21 @@ mod tests {
         assert_eq!(details.size_on_disk_bytes, 300);
         assert_eq!(details.file_count, 5);
         assert_eq!(details.instances.len(), 2);
+        let empty_season = |season_number, file_count| SeriesSeasonDetail {
+            season_number,
+            file_count,
+            episode_count: 0,
+            episodes_with_files: 0,
+            size_on_disk_bytes: 0,
+            playback: None,
+            episodes: Vec::new(),
+        };
         assert_eq!(
             details.seasons,
             vec![
-                SeriesSeasonDetail {
-                    season_number: 1,
-                    file_count: 2,
-                },
-                SeriesSeasonDetail {
-                    season_number: 2,
-                    file_count: 2, // summed across both instances
-                },
-                SeriesSeasonDetail {
-                    season_number: 3,
-                    file_count: 4,
-                },
+                empty_season(1, 2),
+                empty_season(2, 2), // summed across both instances
+                empty_season(3, 4),
             ]
         );
         assert_eq!(details.instance_details.len(), 2);
@@ -686,8 +827,7 @@ mod tests {
                 season_number: 1,
                 file_count: 2,
             }],
-            playback_available: false,
-            playback: None,
+            ..SeriesDetailsSources::default()
         })
         .expect("series details");
 
@@ -717,6 +857,7 @@ mod tests {
                 seasons: Vec::new(),
                 playback_available,
                 playback,
+                ..SeriesDetailsSources::default()
             })
             .expect("series details")
         };
@@ -743,5 +884,133 @@ mod tests {
     #[test]
     fn series_details_returns_none_without_instances() {
         assert!(aggregate_series(SeriesDetailsSources::default()).is_none());
+    }
+
+    fn episode_file(
+        season_number: i64,
+        episode_number: i64,
+        title: &str,
+        has_file: bool,
+        size_on_disk_bytes: i64,
+    ) -> SeriesEpisodeFile {
+        SeriesEpisodeFile {
+            season_number,
+            episode_number,
+            title: title.to_owned(),
+            air_date_utc: None,
+            has_file,
+            size_on_disk_bytes,
+        }
+    }
+
+    #[test]
+    fn series_details_merges_episodes_across_instances() {
+        let details = aggregate_series(SeriesDetailsSources {
+            instances: vec![
+                series_source("Show", 100, 2, vec![1], instance("one", "One"), 0),
+                series_source("Show", 480, 2, vec![1], instance("two", "Two"), 1),
+            ],
+            seasons: vec![SeriesSeasonFiles {
+                season_number: 1,
+                file_count: 3,
+            }],
+            // Rows arrive ordered by config_order; the first title wins, file
+            // presence is OR'd, and sizes are summed.
+            episodes: vec![
+                episode_file(1, 1, "Pilot", true, 100),
+                episode_file(1, 2, "Second", false, 0),
+                episode_file(1, 1, "Pilot (4K)", true, 400),
+                episode_file(1, 2, "Second (4K)", true, 80),
+            ],
+            ..SeriesDetailsSources::default()
+        })
+        .expect("series details");
+
+        assert_eq!(details.seasons.len(), 1);
+        let season = &details.seasons[0];
+        assert_eq!(season.episode_count, 2);
+        assert_eq!(season.episodes_with_files, 2);
+        assert_eq!(season.size_on_disk_bytes, 580);
+        assert_eq!(season.episodes[0].title, "Pilot");
+        assert_eq!(season.episodes[0].size_on_disk_bytes, 500);
+        assert!(season.episodes[1].has_file);
+        assert!(season.playback.is_none()); // playback unavailable
+        assert_eq!(details.unattributed_play_count, None);
+    }
+
+    #[test]
+    fn series_details_attaches_episode_playback_and_counts_unattributed() {
+        let last_played = chrono::DateTime::from_timestamp(1_000, 0);
+        let sources = || SeriesDetailsSources {
+            instances: vec![series_source(
+                "Show",
+                200,
+                2,
+                vec![1],
+                instance("one", "One"),
+                0,
+            )],
+            episodes: vec![
+                episode_file(1, 1, "Pilot", true, 100),
+                episode_file(1, 2, "Second", true, 100),
+            ],
+            episode_playback: vec![
+                SeriesEpisodePlayback {
+                    season_number: 1,
+                    episode_number: 1,
+                    metrics: PlaybackMetrics {
+                        play_count: 3,
+                        play_duration_seconds: 1_800,
+                        last_played_at: last_played,
+                    },
+                },
+                // No matching episode cell (numbering mismatch or removed from
+                // Sonarr): stays unattributed.
+                SeriesEpisodePlayback {
+                    season_number: 9,
+                    episode_number: 1,
+                    metrics: PlaybackMetrics {
+                        play_count: 2,
+                        play_duration_seconds: 600,
+                        last_played_at: None,
+                    },
+                },
+            ],
+            playback_available: true,
+            playback: Some(PlaybackMetrics {
+                play_count: 7,
+                play_duration_seconds: 3_000,
+                last_played_at: last_played,
+            }),
+            ..SeriesDetailsSources::default()
+        };
+
+        let details = aggregate_series(sources()).expect("series details");
+        let season = &details.seasons[0];
+        let season_playback = season.playback.as_ref().expect("season playback");
+        assert_eq!(season_playback.play_count, 3);
+        assert_eq!(season_playback.play_duration_seconds, 1_800);
+        assert_eq!(season_playback.last_played_at, last_played);
+        let pilot = season.episodes[0].playback.as_ref().expect("pilot metrics");
+        assert_eq!(pilot.play_count, 3);
+        // Known but never-played episodes get zeroed metrics, not None.
+        let second = season.episodes[1]
+            .playback
+            .as_ref()
+            .expect("second metrics");
+        assert_eq!(second.play_count, 0);
+        // 7 series plays minus the 3 attributed to cells; the unmatched season 9
+        // rows stay in the remainder.
+        assert_eq!(details.unattributed_play_count, Some(4));
+
+        // Legacy-window overlap can double count; the remainder clamps at zero.
+        let mut overlapping = sources();
+        overlapping.playback = Some(PlaybackMetrics {
+            play_count: 2,
+            play_duration_seconds: 600,
+            last_played_at: last_played,
+        });
+        let details = aggregate_series(overlapping).expect("series details");
+        assert_eq!(details.unattributed_play_count, Some(0));
     }
 }

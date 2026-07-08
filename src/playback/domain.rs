@@ -70,6 +70,10 @@ pub struct PlaybackEvent {
     pub source_row_id: i64,
     pub played_at: DateTime<Utc>,
     pub duration_seconds: i64,
+    /// Season/episode position within a series; `None` for movies and tracks,
+    /// and for episode rows where the source omits the numbers.
+    pub season_number: Option<i64>,
+    pub episode_number: Option<i64>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

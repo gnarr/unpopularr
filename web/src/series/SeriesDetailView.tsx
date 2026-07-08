@@ -9,6 +9,8 @@ import { StatCard } from '../components/StatCard'
 import { StatCardSkeleton, TableSkeleton } from '../components/Skeletons'
 import { TypeBadge } from '../components/TypeBadge'
 import { absoluteTime, formatBytes, formatDuration, relativeTime } from '../lib/format'
+import { EpisodeLegend } from './EpisodeLegend'
+import { SeasonCard } from './SeasonCard'
 
 export function SeriesDetailView() {
   const { tvdbId: raw } = useParams()
@@ -104,40 +106,25 @@ function SeriesDetail({ data }: { data: SeriesDetails }) {
         )}
       </section>
 
-      <section className="rounded-lg border border-slate-800 bg-slate-900/40">
-        <header className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
+      <section className="space-y-3">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
           <h2 className="text-sm font-semibold text-slate-100">Seasons</h2>
-        </header>
-        <div className="p-4">
-          {data.seasons.length === 0 ? (
-            <p className="text-sm text-slate-400">No season file data.</p>
-          ) : (
-            <table className="w-full border-separate border-spacing-0 text-sm">
-              <thead>
-                <tr>
-                  <th className="border-b border-slate-800 px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-400">
-                    Season
-                  </th>
-                  <th className="border-b border-slate-800 px-3 py-2 text-right text-xs font-semibold uppercase tracking-wide text-slate-400">
-                    Files
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.seasons.map((season) => (
-                  <tr key={season.seasonNumber} className="hover:bg-slate-800/30">
-                    <td className="border-b border-slate-800/60 px-3 py-1.5">
-                      Season {season.seasonNumber}
-                    </td>
-                    <td className="border-b border-slate-800/60 px-3 py-1.5 text-right tabular-nums">
-                      {season.fileCount.toLocaleString()}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
+          {data.seasons.length > 0 && <EpisodeLegend playbackAvailable={playback !== null} />}
         </div>
+        {data.seasons.length === 0 ? (
+          <p className="text-sm text-slate-400">No season file data.</p>
+        ) : (
+          data.seasons.map((season) => (
+            <SeasonCard key={season.seasonNumber} season={season} />
+          ))
+        )}
+        {data.unattributedPlayCount !== null && data.unattributedPlayCount > 0 && (
+          <p className="text-xs text-slate-500">
+            {data.unattributedPlayCount.toLocaleString()}{' '}
+            {data.unattributedPlayCount === 1 ? "play isn't" : "plays aren't"} shown per episode
+            (synced before episode tracking, missing episode info, or specials).
+          </p>
+        )}
       </section>
 
       {data.instanceDetails.length > 1 && (

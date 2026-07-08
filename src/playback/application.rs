@@ -223,6 +223,8 @@ mod tests {
                         source_row_id: 1,
                         played_at: DateTime::from_timestamp(100, 0).expect("timestamp"),
                         duration_seconds: 60,
+                        season_number: None,
+                        episode_number: None,
                     }],
                     matched_history_rows: 1,
                     unmatched_history_rows: 1,

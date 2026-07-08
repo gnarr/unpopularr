@@ -5,7 +5,7 @@ mod ports;
 
 pub use application::{StartSync, SyncService};
 pub use domain::{
-    ArtistAlbumSnapshot, ArtistSnapshot, InstanceSyncResult, MovieSnapshot, SeriesSeasonSnapshot,
-    SeriesSnapshot, Snapshot, SyncRun, SyncStatus, SyncTrigger,
+    ArtistAlbumSnapshot, ArtistSnapshot, InstanceSyncResult, MovieSnapshot, SeriesEpisodeSnapshot,
+    SeriesSeasonSnapshot, SeriesSnapshot, Snapshot, SyncRun, SyncStatus, SyncTrigger,
 };
 pub use ports::CollectionRepository;

@@ -188,6 +188,8 @@ impl PlaybackSourceClient for TautulliClient {
                     source_row_id,
                     played_at,
                     duration_seconds: entry.duration_seconds,
+                    season_number: entry.season_number,
+                    episode_number: entry.episode_number,
                 });
             }
         }
@@ -259,6 +261,10 @@ struct HistoryRow {
     #[serde(default, deserialize_with = "deserialize_optional_i64")]
     grandparent_rating_key: Option<i64>,
     #[serde(default, deserialize_with = "deserialize_optional_i64")]
+    parent_media_index: Option<i64>,
+    #[serde(default, deserialize_with = "deserialize_optional_i64")]
+    media_index: Option<i64>,
+    #[serde(default, deserialize_with = "deserialize_optional_i64")]
     play_duration: Option<i64>,
     #[serde(default, deserialize_with = "deserialize_optional_i64")]
     date: Option<i64>,
@@ -274,6 +280,8 @@ struct HistoryEntry {
     source_row_id: Option<i64>,
     played_at: Option<DateTime<Utc>>,
     duration_seconds: i64,
+    season_number: Option<i64>,
+    episode_number: Option<i64>,
 }
 
 impl HistoryEntry {
@@ -283,6 +291,14 @@ impl HistoryEntry {
             "episode" => (TopLevelKind::Series, row.grandparent_rating_key),
             "track" => (TopLevelKind::Artist, row.grandparent_rating_key),
             _ => return None,
+        };
+        let (season_number, episode_number) = if row.media_type == "episode" {
+            (
+                row.parent_media_index.filter(|number| *number >= 0),
+                row.media_index.filter(|number| *number >= 0),
+            )
+        } else {
+            (None, None)
         };
         let lookup_key = rating_key
             .filter(|rating_key| *rating_key > 0)
@@ -304,6 +320,8 @@ impl HistoryEntry {
             source_row_id,
             played_at,
             duration_seconds: row.play_duration.unwrap_or(0).max(0),
+            season_number,
+            episode_number,
         })
     }
 }
@@ -497,6 +515,8 @@ mod tests {
                             "media_type": "episode",
                             "row_id": 3,
                             "grandparent_rating_key": 20,
+                            "parent_media_index": "2",
+                            "media_index": 5,
                             "play_duration": 60,
                             "started": 300
                         },
@@ -504,6 +524,8 @@ mod tests {
                             "media_type": "track",
                             "row_id": 4,
                             "grandparent_rating_key": 30,
+                            "parent_media_index": 1,
+                            "media_index": 9,
                             "play_duration": 30,
                             "stopped": 400
                         },
@@ -557,22 +579,30 @@ mod tests {
         assert_eq!(snapshot.events[0].source_row_id, 1);
         assert_eq!(snapshot.events[0].duration_seconds, 120);
         assert_eq!(snapshot.events[0].played_at.timestamp(), 200);
+        assert_eq!(snapshot.events[0].season_number, None);
+        assert_eq!(snapshot.events[0].episode_number, None);
 
         // A second session of the same movie is its own event (no grouping).
         assert_eq!(snapshot.events[1].key, ContentKey::Movie(42));
         assert_eq!(snapshot.events[1].source_row_id, 2);
         assert_eq!(snapshot.events[1].duration_seconds, 80);
 
-        // Falls back to `started` when `stopped` is absent.
+        // Falls back to `started` when `stopped` is absent. Episode positions
+        // are kept, including string-typed values from Tautulli.
         assert_eq!(snapshot.events[2].key, ContentKey::Series(7));
         assert_eq!(snapshot.events[2].source_row_id, 3);
         assert_eq!(snapshot.events[2].played_at.timestamp(), 300);
+        assert_eq!(snapshot.events[2].season_number, Some(2));
+        assert_eq!(snapshot.events[2].episode_number, Some(5));
 
+        // Track positions are meaningless for the matrix and stay unset.
         assert_eq!(
             snapshot.events[3].key,
             ContentKey::Artist("artist-id".to_owned())
         );
         assert_eq!(snapshot.events[3].source_row_id, 4);
+        assert_eq!(snapshot.events[3].season_number, None);
+        assert_eq!(snapshot.events[3].episode_number, None);
     }
 
     #[tokio::test]

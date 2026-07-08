@@ -227,6 +227,28 @@ impl CollectionRepository for SqliteCollectionRepository {
                         .execute(&mut *transaction)
                         .await?;
                     }
+
+                    for episode in &series.episodes {
+                        sqlx::query(
+                            r#"
+                            INSERT INTO series_episode_snapshots (
+                                instance_id, tvdb_id, season_number, episode_number,
+                                title, air_date_utc, has_file, size_on_disk_bytes
+                            )
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            "#,
+                        )
+                        .bind(&instance.id)
+                        .bind(series.tvdb_id)
+                        .bind(episode.season_number)
+                        .bind(episode.episode_number)
+                        .bind(&episode.title)
+                        .bind(episode.air_date_utc)
+                        .bind(episode.has_file)
+                        .bind(episode.size_on_disk_bytes)
+                        .execute(&mut *transaction)
+                        .await?;
+                    }
                 }
             }
             Snapshot::Artists(artists) => {
@@ -494,7 +516,10 @@ mod tests {
     use url::Url;
 
     use crate::{
-        collection::{CollectionRepository, MovieSnapshot, Snapshot, SyncStatus, SyncTrigger},
+        collection::{
+            CollectionRepository, MovieSnapshot, SeriesEpisodeSnapshot, SeriesSeasonSnapshot,
+            SeriesSnapshot, Snapshot, SyncStatus, SyncTrigger,
+        },
         database,
         instances::{Instance, InstanceKind},
     };
@@ -502,13 +527,43 @@ mod tests {
     use super::SqliteCollectionRepository;
 
     fn instance(id: &str) -> Instance {
+        instance_of_kind(id, InstanceKind::Radarr)
+    }
+
+    fn instance_of_kind(id: &str, kind: InstanceKind) -> Instance {
         Instance {
             id: id.to_owned(),
             name: id.to_owned(),
-            kind: InstanceKind::Radarr,
+            kind,
             base_url: Url::parse("http://localhost/").expect("URL"),
             api_key: "secret".to_owned(),
             config_order: 0,
+        }
+    }
+
+    fn series_snapshot(episodes: Vec<SeriesEpisodeSnapshot>) -> Snapshot {
+        Snapshot::Series(vec![SeriesSnapshot {
+            tvdb_id: 7,
+            title: "Series".to_owned(),
+            year: 2020,
+            size_on_disk_bytes: 512,
+            file_count: 1,
+            seasons: vec![SeriesSeasonSnapshot {
+                season_number: 1,
+                file_count: 1,
+            }],
+            episodes,
+        }])
+    }
+
+    fn episode(season_number: i64, episode_number: i64) -> SeriesEpisodeSnapshot {
+        SeriesEpisodeSnapshot {
+            season_number,
+            episode_number,
+            title: format!("S{season_number}E{episode_number}"),
+            air_date_utc: None,
+            has_file: true,
+            size_on_disk_bytes: 512,
         }
     }
 
@@ -558,6 +613,75 @@ mod tests {
             .fetch_one(&pool)
             .await
             .expect("count snapshots");
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn replaces_episode_snapshots_on_resync_and_cascades_on_removal() {
+        let pool = database::test_pool().await;
+        let repository = SqliteCollectionRepository::new(pool.clone());
+        let instance = instance_of_kind("sonarr", InstanceKind::Sonarr);
+        repository
+            .reconcile_instances(std::slice::from_ref(&instance))
+            .await
+            .expect("reconcile");
+
+        let run = repository
+            .create_sync_run(
+                SyncTrigger::Manual,
+                std::slice::from_ref(&instance),
+                Utc::now(),
+            )
+            .await
+            .expect("create run");
+        repository
+            .store_successful_snapshot(
+                run.id,
+                &instance,
+                &series_snapshot(vec![episode(1, 1), episode(1, 2)]),
+                Utc::now(),
+            )
+            .await
+            .expect("store first snapshot");
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM series_episode_snapshots")
+            .fetch_one(&pool)
+            .await
+            .expect("count episodes");
+        assert_eq!(count, 2);
+
+        // A re-sync replaces the instance's episode rows wholesale.
+        let run = repository
+            .create_sync_run(
+                SyncTrigger::Manual,
+                std::slice::from_ref(&instance),
+                Utc::now(),
+            )
+            .await
+            .expect("create second run");
+        repository
+            .store_successful_snapshot(
+                run.id,
+                &instance,
+                &series_snapshot(vec![episode(1, 1)]),
+                Utc::now(),
+            )
+            .await
+            .expect("store second snapshot");
+        let episodes: Vec<(i64, i64)> =
+            sqlx::query_as("SELECT season_number, episode_number FROM series_episode_snapshots")
+                .fetch_all(&pool)
+                .await
+                .expect("episode rows");
+        assert_eq!(episodes, vec![(1, 1)]);
+
+        repository
+            .reconcile_instances(&[])
+            .await
+            .expect("remove instance");
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM series_episode_snapshots")
+            .fetch_one(&pool)
+            .await
+            .expect("count after removal");
         assert_eq!(count, 0);
     }
 
