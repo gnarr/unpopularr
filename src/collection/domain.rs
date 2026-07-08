@@ -37,12 +37,25 @@ pub struct SeriesSnapshot {
     pub size_on_disk_bytes: i64,
     pub file_count: i64,
     pub seasons: Vec<SeriesSeasonSnapshot>,
+    pub episodes: Vec<SeriesEpisodeSnapshot>,
 }
 
 #[derive(Clone, Debug)]
 pub struct SeriesSeasonSnapshot {
     pub season_number: i64,
     pub file_count: i64,
+}
+
+/// One episode known to Sonarr, aired or not. Season 0 (specials) is excluded,
+/// matching [`SeriesSeasonSnapshot`].
+#[derive(Clone, Debug)]
+pub struct SeriesEpisodeSnapshot {
+    pub season_number: i64,
+    pub episode_number: i64,
+    pub title: String,
+    pub air_date_utc: Option<DateTime<Utc>>,
+    pub has_file: bool,
+    pub size_on_disk_bytes: i64,
 }
 
 #[derive(Clone, Debug)]

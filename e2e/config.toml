@@ -1,0 +1,26 @@
+# App configuration for the Playwright suite; talks to e2e/mock-arr.mjs.
+[server]
+bind = "127.0.0.1:39101"
+
+[database]
+# Inside the (ephemeral) container, so every run starts from empty.
+path = "/tmp/unpopularr-e2e.db"
+
+[sync]
+interval_seconds = 21600
+run_on_startup = false
+
+[playback]
+id = "plex-main"
+provider = "tautulli"
+base_url = "http://127.0.0.1:39100/taut"
+api_key_env = "TAUTULLI_API_KEY"
+interval_seconds = 21600
+run_on_startup = false
+
+[[instances]]
+id = "sonarr-hd"
+name = "Sonarr HD"
+kind = "sonarr"
+base_url = "http://127.0.0.1:39100/sonarr"
+api_key_env = "SONARR_HD_API_KEY"

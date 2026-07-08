@@ -7,7 +7,8 @@ use sqlx::{Row, SqlitePool};
 
 use crate::catalog::{
     ArtistSource, CatalogPlayback, CatalogRepository, CatalogSources, InstanceReference,
-    MovieSource, PlaybackMetrics, SeriesDetailsSources, SeriesSeasonFiles, SeriesSource,
+    MovieSource, PlaybackMetrics, SeriesDetailsSources, SeriesEpisodeFile, SeriesEpisodePlayback,
+    SeriesSeasonFiles, SeriesSource,
 };
 
 #[derive(Clone)]
@@ -265,6 +266,35 @@ impl CatalogRepository for SqliteCatalogRepository {
                 .push(season_number);
         }
 
+        // Ordered by config_order so aggregate_series' first-wins merge picks
+        // the same instance that wins the display metadata.
+        let episode_rows = sqlx::query(
+            r#"
+            SELECT e.season_number, e.episode_number, e.title, e.air_date_utc,
+                   e.has_file, e.size_on_disk_bytes
+            FROM series_episode_snapshots e
+            JOIN instances i ON i.id = e.instance_id
+            WHERE e.tvdb_id = ?1
+            ORDER BY i.config_order, e.season_number, e.episode_number
+            "#,
+        )
+        .bind(tvdb_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let episodes = episode_rows
+            .into_iter()
+            .map(|row| {
+                Ok::<_, anyhow::Error>(SeriesEpisodeFile {
+                    season_number: row.try_get("season_number")?,
+                    episode_number: row.try_get("episode_number")?,
+                    title: row.try_get("title")?,
+                    air_date_utc: row.try_get("air_date_utc")?,
+                    has_file: row.try_get("has_file")?,
+                    size_on_disk_bytes: row.try_get("size_on_disk_bytes")?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
         let playback_available = sqlx::query_scalar::<_, bool>(
             r#"
             SELECT EXISTS(
@@ -298,6 +328,40 @@ impl CatalogRepository for SqliteCatalogRepository {
         } else {
             None
         };
+        let episode_playback = if playback_available {
+            // Aggregated at read time from the raw events; only rows that carry
+            // episode positions can be attributed to a matrix cell.
+            sqlx::query(
+                r#"
+                SELECT season_number, episode_number,
+                       COUNT(*) AS play_count,
+                       COALESCE(SUM(duration_seconds), 0) AS play_duration_seconds,
+                       MAX(played_at) AS last_played_at
+                FROM playback_events
+                WHERE content_type = 'series' AND content_id = ?1
+                  AND season_number IS NOT NULL AND episode_number IS NOT NULL
+                GROUP BY season_number, episode_number
+                "#,
+            )
+            .bind(tvdb_id.to_string())
+            .fetch_all(&self.pool)
+            .await?
+            .into_iter()
+            .map(|row| {
+                Ok::<_, anyhow::Error>(SeriesEpisodePlayback {
+                    season_number: row.try_get("season_number")?,
+                    episode_number: row.try_get("episode_number")?,
+                    metrics: PlaybackMetrics {
+                        play_count: row.try_get("play_count")?,
+                        play_duration_seconds: row.try_get("play_duration_seconds")?,
+                        last_played_at: row.try_get("last_played_at")?,
+                    },
+                })
+            })
+            .collect::<Result<Vec<_>>>()?
+        } else {
+            Vec::new()
+        };
 
         let instances = series_rows
             .into_iter()
@@ -321,6 +385,8 @@ impl CatalogRepository for SqliteCatalogRepository {
         Ok(Some(SeriesDetailsSources {
             instances,
             seasons,
+            episodes,
+            episode_playback,
             playback_available,
             playback,
         }))

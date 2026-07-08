@@ -1,6 +1,8 @@
-use std::time::Duration;
+use std::{collections::BTreeMap, time::Duration};
 
 use anyhow::{Context, Result, bail};
+use chrono::{DateTime, Utc};
+use futures::{StreamExt, TryStreamExt, stream};
 use reqwest::{
     Client, Url,
     header::{CONTENT_TYPE, LOCATION},
@@ -11,11 +13,13 @@ use serde::de::DeserializeOwned;
 
 use crate::{
     collection::{
-        ArtistAlbumSnapshot, ArtistSnapshot, MovieSnapshot, SeriesSeasonSnapshot, SeriesSnapshot,
-        Snapshot,
+        ArtistAlbumSnapshot, ArtistSnapshot, MovieSnapshot, SeriesEpisodeSnapshot,
+        SeriesSeasonSnapshot, SeriesSnapshot, Snapshot,
     },
     instances::{Instance, InstanceKind},
 };
+
+const MAX_CONCURRENT_EPISODE_REQUESTS: usize = 8;
 
 #[derive(Clone)]
 pub struct ArrClient {
@@ -82,10 +86,31 @@ impl ArrClient {
             )
             .await?;
 
+        // Episode detail requires one request per series; `buffered` bounds the
+        // load on Sonarr while keeping the snapshot order deterministic.
+        let series = stream::iter(series)
+            .map(|series| async move {
+                let series_id = series.id.to_string();
+                let episodes: Vec<SonarrEpisode> = self
+                    .get(
+                        instance,
+                        "api/v3/episode",
+                        &[
+                            ("seriesId", series_id.as_str()),
+                            ("includeEpisodeFile", "true"),
+                        ],
+                    )
+                    .await?;
+                Ok::<_, anyhow::Error>((series, episodes))
+            })
+            .buffered(MAX_CONCURRENT_EPISODE_REQUESTS)
+            .try_collect::<Vec<_>>()
+            .await?;
+
         Ok(Snapshot::Series(
             series
                 .into_iter()
-                .map(|series| {
+                .map(|(series, episodes)| {
                     let statistics = series.statistics.unwrap_or_default();
                     let seasons = series
                         .seasons
@@ -113,6 +138,7 @@ impl ArrClient {
                         size_on_disk_bytes: non_negative(statistics.size_on_disk.unwrap_or(0)),
                         file_count: non_negative(statistics.episode_file_count.unwrap_or(0)),
                         seasons,
+                        episodes: episode_snapshots(episodes),
                     }
                 })
                 .collect(),
@@ -227,6 +253,33 @@ fn non_negative(value: i64) -> i64 {
     value.max(0)
 }
 
+/// Maps Sonarr episodes to snapshots, excluding specials and deduplicating on
+/// (season, episode) so pathological Sonarr data cannot violate the storage
+/// primary key. Unaired episodes are kept; the UI renders them distinctly.
+fn episode_snapshots(episodes: Vec<SonarrEpisode>) -> Vec<SeriesEpisodeSnapshot> {
+    episodes
+        .into_iter()
+        .filter(|episode| episode.season_number > 0 && episode.episode_number >= 0)
+        .map(|episode| {
+            (
+                (episode.season_number, episode.episode_number),
+                SeriesEpisodeSnapshot {
+                    season_number: episode.season_number,
+                    episode_number: episode.episode_number,
+                    title: episode.title,
+                    air_date_utc: episode.air_date_utc,
+                    has_file: episode.has_file,
+                    size_on_disk_bytes: non_negative(
+                        episode.episode_file.and_then(|file| file.size).unwrap_or(0),
+                    ),
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>()
+        .into_values()
+        .collect()
+}
+
 fn normalize_musicbrainz_id(id: &str, entity: &str) -> Result<String> {
     let id = id.trim();
     if id.is_empty() {
@@ -257,6 +310,8 @@ struct RadarrStatistics {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SonarrSeries {
+    /// Sonarr's internal series id, required to fetch the episode list.
+    id: i64,
     tvdb_id: i64,
     title: String,
     #[serde(default)]
@@ -284,6 +339,25 @@ struct SonarrSeasonStatistics {
 struct SonarrStatistics {
     episode_file_count: Option<i64>,
     size_on_disk: Option<i64>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SonarrEpisode {
+    season_number: i64,
+    episode_number: i64,
+    #[serde(default)]
+    title: String,
+    air_date_utc: Option<DateTime<Utc>>,
+    #[serde(default)]
+    has_file: bool,
+    episode_file: Option<SonarrEpisodeFile>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SonarrEpisodeFile {
+    size: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -379,6 +453,7 @@ mod tests {
             .and(query_param("includeSeasonImages", "false"))
             .respond_with(
                 ResponseTemplate::new(200).set_body_json(serde_json::json!([{
+                    "id": 9,
                     "tvdbId": 7,
                     "title": "Series",
                     "year": 2020,
@@ -390,6 +465,43 @@ mod tests {
                     ]
                 }])),
             )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v3/episode"))
+            .and(query_param("seriesId", "9"))
+            .and(query_param("includeEpisodeFile", "true"))
+            .and(header("X-Api-Key", "secret"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {
+                    "seasonNumber": 0,
+                    "episodeNumber": 1,
+                    "title": "Special",
+                    "hasFile": true,
+                    "episodeFile": {"size": 100}
+                },
+                {
+                    "seasonNumber": 1,
+                    "episodeNumber": 2,
+                    "title": "Aired, missing",
+                    "airDateUtc": "2020-01-08T02:00:00Z",
+                    "hasFile": false
+                },
+                {
+                    "seasonNumber": 1,
+                    "episodeNumber": 1,
+                    "title": "On disk",
+                    "airDateUtc": "2020-01-01T02:00:00Z",
+                    "hasFile": true,
+                    "episodeFile": {"size": 512}
+                },
+                {
+                    "seasonNumber": 2,
+                    "episodeNumber": 1,
+                    "title": "",
+                    "hasFile": false
+                }
+            ])))
             .mount(&server)
             .await;
 
@@ -404,6 +516,24 @@ mod tests {
         };
         assert_eq!(series[0].seasons.len(), 1);
         assert_eq!(series[0].seasons[0].season_number, 1);
+
+        // Specials are excluded; the rest are ordered by (season, episode).
+        let episodes = &series[0].episodes;
+        assert_eq!(episodes.len(), 3);
+        assert_eq!(episodes[0].season_number, 1);
+        assert_eq!(episodes[0].episode_number, 1);
+        assert!(episodes[0].has_file);
+        assert_eq!(episodes[0].size_on_disk_bytes, 512);
+        assert_eq!(episodes[1].title, "Aired, missing");
+        assert!(!episodes[1].has_file);
+        assert_eq!(episodes[1].size_on_disk_bytes, 0);
+        assert_eq!(
+            episodes[1].air_date_utc.map(|date| date.to_rfc3339()),
+            Some("2020-01-08T02:00:00+00:00".to_owned())
+        );
+        // Unaired (no air date yet) episodes are retained.
+        assert_eq!(episodes[2].season_number, 2);
+        assert_eq!(episodes[2].air_date_utc, None);
     }
 
     #[tokio::test]

@@ -48,9 +48,25 @@ export type ContentType = ContentItem['contentType']
 // Per-series detail (GET /api/v1/series/{tvdbId}). Mirrors the backend
 // `SeriesDetails` serde struct; the season/instance breakdowns are data the flat
 // catalog list discards.
+export interface SeriesEpisodeDetail {
+  episodeNumber: number
+  title: string
+  airDateUtc: string | null
+  hasFile: boolean
+  sizeOnDiskBytes: number
+  playback: PlaybackMetrics | null
+}
+
 export interface SeriesSeasonDetail {
   seasonNumber: number
   fileCount: number
+  // Distinct episodes known to Sonarr, aired or not. 0 when the snapshot
+  // predates episode collection (run a sync to populate).
+  episodeCount: number
+  episodesWithFiles: number
+  sizeOnDiskBytes: number
+  playback: PlaybackMetrics | null
+  episodes: SeriesEpisodeDetail[]
 }
 
 export interface SeriesInstanceDetail {
@@ -70,6 +86,9 @@ export interface SeriesDetails {
   seasons: SeriesSeasonDetail[]
   instanceDetails: SeriesInstanceDetail[]
   playback: PlaybackMetrics | null
+  // Series-level plays with no episode cell to land on (legacy aggregates,
+  // events without positions, specials). Null when playback is unavailable.
+  unattributedPlayCount: number | null
 }
 
 export type SyncTrigger = 'startup' | 'scheduled' | 'manual'
