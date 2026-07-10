@@ -1,7 +1,9 @@
 import { useQuery } from '@tanstack/react-query'
 import {
   PLAYBACK_NOT_CONFIGURED,
+  getArtist,
   getContent,
+  getMovie,
   getPlaybackSyncStatus,
   getSeries,
   getSyncStatus,
@@ -25,10 +27,33 @@ export function useSeries(tvdbId: number) {
     queryFn: () => getSeries(tvdbId),
     staleTime: 60_000,
     enabled: Number.isFinite(tvdbId),
-    // A 404 is a definitive "no such series" — don't burn the default retry on it.
-    retry: (failureCount, error) =>
-      error instanceof ApiError && error.status === 404 ? false : failureCount < 1,
+    retry: retryExceptNotFound,
   })
+}
+
+export function useMovie(tmdbId: number) {
+  return useQuery({
+    queryKey: queryKeys.movie(tmdbId),
+    queryFn: () => getMovie(tmdbId),
+    staleTime: 60_000,
+    enabled: Number.isFinite(tmdbId),
+    retry: retryExceptNotFound,
+  })
+}
+
+export function useArtist(musicBrainzId: string) {
+  return useQuery({
+    queryKey: queryKeys.artist(musicBrainzId),
+    queryFn: () => getArtist(musicBrainzId),
+    staleTime: 60_000,
+    enabled: musicBrainzId.length > 0,
+    retry: retryExceptNotFound,
+  })
+}
+
+// A 404 is a definitive "no such item" — don't burn the default retry on it.
+function retryExceptNotFound(failureCount: number, error: Error) {
+  return error instanceof ApiError && error.status === 404 ? false : failureCount < 1
 }
 
 export function useSyncStatus() {

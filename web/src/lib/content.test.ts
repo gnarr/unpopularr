@@ -101,9 +101,11 @@ describe('detail helpers and ids', () => {
     expect(year(artist)).toBeNull()
   })
 
-  it('routes only series to a detail path', () => {
+  it('routes every type to its detail path', () => {
     expect(detailPath(series)).toBe('/series/79126')
-    expect(detailPath(movie)).toBeNull()
-    expect(detailPath(artist)).toBeNull()
+    expect(detailPath(movie)).toBe('/movies/949')
+    expect(detailPath(artist)).toBe('/artists/mbid-1')
+    // The MBID comes from an external system — it is URL-encoded defensively.
+    expect(detailPath({ ...artist, musicBrainzId: 'a b' })).toBe('/artists/a%20b')
   })
 })

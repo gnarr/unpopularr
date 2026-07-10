@@ -27,16 +27,14 @@ export function buildColumns(hasPlayback: boolean): Array<ColumnDef<ContentItem,
       cell: (ctx) => {
         const item = ctx.row.original
         const releaseYear = year(item)
-        const path = detailPath(item)
         return (
           <div className="flex items-center gap-2">
-            {path ? (
-              <Link to={path} className="font-medium text-slate-100 hover:text-indigo-300 hover:underline">
-                {item.displayName}
-              </Link>
-            ) : (
-              <span className="font-medium text-slate-100">{item.displayName}</span>
-            )}
+            <Link
+              to={detailPath(item)}
+              className="font-medium text-slate-100 hover:text-indigo-300 hover:underline"
+            >
+              {item.displayName}
+            </Link>
             {releaseYear !== null && <span className="text-slate-500">({releaseYear})</span>}
           </div>
         )

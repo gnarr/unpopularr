@@ -1,5 +1,12 @@
 import { ApiError, request } from './http'
-import type { ContentItem, PlaybackSyncRun, SeriesDetails, SyncRun } from './types'
+import type {
+  ArtistDetails,
+  ContentItem,
+  MovieDetails,
+  PlaybackSyncRun,
+  SeriesDetails,
+  SyncRun,
+} from './types'
 
 export const PLAYBACK_NOT_CONFIGURED = 'not-configured' as const
 export type PlaybackSyncState = PlaybackSyncRun | null | typeof PLAYBACK_NOT_CONFIGURED
@@ -8,11 +15,25 @@ export function getContent(): Promise<ContentItem[]> {
   return request<ContentItem[]>('/api/v1/content').then((data) => data ?? [])
 }
 
-// A missing series 404s; unlike playback that ApiError is surfaced so the detail
-// view can render a "not found" state.
+// A missing item 404s; unlike playback that ApiError is surfaced so the detail
+// views can render a "not found" state.
 export async function getSeries(tvdbId: number): Promise<SeriesDetails> {
   const data = await request<SeriesDetails>(`/api/v1/series/${tvdbId}`)
   if (data === null) throw new ApiError(502, 'empty series response')
+  return data
+}
+
+export async function getMovie(tmdbId: number): Promise<MovieDetails> {
+  const data = await request<MovieDetails>(`/api/v1/movies/${tmdbId}`)
+  if (data === null) throw new ApiError(502, 'empty movie response')
+  return data
+}
+
+export async function getArtist(musicBrainzId: string): Promise<ArtistDetails> {
+  const data = await request<ArtistDetails>(
+    `/api/v1/artists/${encodeURIComponent(musicBrainzId)}`,
+  )
+  if (data === null) throw new ApiError(502, 'empty artist response')
   return data
 }
 

@@ -5,6 +5,8 @@ import { Header } from './components/Header'
 import { CatalogView } from './catalog/CatalogView'
 import { ActivityView } from './activity/ActivityView'
 import { SeriesDetailView } from './series/SeriesDetailView'
+import { MovieDetailView } from './movie/MovieDetailView'
+import { ArtistDetailView } from './artist/ArtistDetailView'
 import { usePlaybackSyncStatus, useSyncStatus } from './api/queries'
 import { PLAYBACK_NOT_CONFIGURED } from './api/client'
 import { queryKeys } from './api/queryKeys'
@@ -17,6 +19,8 @@ export default function App() {
         <Route index element={<CatalogView />} />
         <Route path="activity" element={<ActivityView />} />
         <Route path="series/:tvdbId" element={<SeriesDetailView />} />
+        <Route path="movies/:tmdbId" element={<MovieDetailView />} />
+        <Route path="artists/:musicBrainzId" element={<ArtistDetailView />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>
@@ -52,10 +56,12 @@ function useRefreshContentAfterSync() {
       : undefined
 
   // A completed sync lands fresh snapshots/playback, so refresh both the catalog
-  // list and any open series detail page (cached under the ['series', id] prefix).
+  // list and any open detail page (cached under the [type, id] prefixes).
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: queryKeys.content })
     queryClient.invalidateQueries({ queryKey: queryKeys.seriesAll })
+    queryClient.invalidateQueries({ queryKey: queryKeys.movieAll })
+    queryClient.invalidateQueries({ queryKey: queryKeys.artistAll })
   }
   useTerminalTransition(syncStatus, refresh)
   useTerminalTransition(playbackStatus, refresh)

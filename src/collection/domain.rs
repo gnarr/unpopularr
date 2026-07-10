@@ -70,6 +70,8 @@ pub struct ArtistSnapshot {
 #[derive(Clone, Debug)]
 pub struct ArtistAlbumSnapshot {
     pub musicbrainz_id: String,
+    pub title: String,
+    pub size_on_disk_bytes: i64,
     pub file_count: i64,
 }
 

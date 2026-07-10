@@ -154,18 +154,16 @@ impl ArrClient {
         let mut albums_by_artist =
             std::collections::HashMap::<i64, Vec<ArtistAlbumSnapshot>>::new();
         for album in albums {
-            let file_count = non_negative(
-                album
-                    .statistics
-                    .and_then(|statistics| statistics.track_file_count)
-                    .unwrap_or(0),
-            );
+            let statistics = album.statistics.unwrap_or_default();
+            let file_count = non_negative(statistics.track_file_count.unwrap_or(0));
             if file_count > 0 {
                 albums_by_artist
                     .entry(album.artist_id)
                     .or_default()
                     .push(ArtistAlbumSnapshot {
                         musicbrainz_id: normalize_musicbrainz_id(&album.foreign_album_id, "album")?,
+                        title: album.title,
+                        size_on_disk_bytes: non_negative(statistics.size_on_disk.unwrap_or(0)),
                         file_count,
                     });
             }
@@ -381,13 +379,16 @@ struct LidarrArtistStatistics {
 struct LidarrAlbum {
     artist_id: i64,
     foreign_album_id: String,
+    #[serde(default)]
+    title: String,
     statistics: Option<LidarrAlbumStatistics>,
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LidarrAlbumStatistics {
     track_file_count: Option<i64>,
+    size_on_disk: Option<i64>,
 }
 
 #[cfg(test)]
@@ -557,7 +558,8 @@ mod tests {
                 {
                     "artistId": 3,
                     "foreignAlbumId": "ALBUM-ONE",
-                    "statistics": {"trackFileCount": 5}
+                    "title": "Album One",
+                    "statistics": {"trackFileCount": 5, "sizeOnDisk": 800}
                 },
                 {
                     "artistId": 3,
@@ -580,6 +582,8 @@ mod tests {
         assert_eq!(artists[0].musicbrainz_id, "artist-id");
         assert_eq!(artists[0].albums.len(), 1);
         assert_eq!(artists[0].albums[0].musicbrainz_id, "album-one");
+        assert_eq!(artists[0].albums[0].title, "Album One");
+        assert_eq!(artists[0].albums[0].size_on_disk_bytes, 800);
     }
 
     #[tokio::test]

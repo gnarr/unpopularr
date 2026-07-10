@@ -24,3 +24,17 @@ name = "Sonarr HD"
 kind = "sonarr"
 base_url = "http://127.0.0.1:39100/sonarr"
 api_key_env = "SONARR_HD_API_KEY"
+
+[[instances]]
+id = "radarr-uhd"
+name = "Radarr UHD"
+kind = "radarr"
+base_url = "http://127.0.0.1:39100/radarr"
+api_key_env = "RADARR_UHD_API_KEY"
+
+[[instances]]
+id = "lidarr-main"
+name = "Lidarr"
+kind = "lidarr"
+base_url = "http://127.0.0.1:39100/lidarr"
+api_key_env = "LIDARR_MAIN_API_KEY"

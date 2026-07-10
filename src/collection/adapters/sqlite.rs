@@ -277,14 +277,17 @@ impl CollectionRepository for SqliteCollectionRepository {
                         sqlx::query(
                             r#"
                             INSERT INTO artist_album_snapshots (
-                                instance_id, artist_musicbrainz_id, album_musicbrainz_id, file_count
+                                instance_id, artist_musicbrainz_id, album_musicbrainz_id,
+                                title, size_on_disk_bytes, file_count
                             )
-                            VALUES (?, ?, ?, ?)
+                            VALUES (?, ?, ?, ?, ?, ?)
                             "#,
                         )
                         .bind(&instance.id)
                         .bind(&artist.musicbrainz_id)
                         .bind(&album.musicbrainz_id)
+                        .bind(&album.title)
+                        .bind(album.size_on_disk_bytes)
                         .bind(album.file_count)
                         .execute(&mut *transaction)
                         .await?;
@@ -517,8 +520,9 @@ mod tests {
 
     use crate::{
         collection::{
-            CollectionRepository, MovieSnapshot, SeriesEpisodeSnapshot, SeriesSeasonSnapshot,
-            SeriesSnapshot, Snapshot, SyncStatus, SyncTrigger,
+            ArtistAlbumSnapshot, ArtistSnapshot, CollectionRepository, MovieSnapshot,
+            SeriesEpisodeSnapshot, SeriesSeasonSnapshot, SeriesSnapshot, Snapshot, SyncStatus,
+            SyncTrigger,
         },
         database,
         instances::{Instance, InstanceKind},
@@ -747,5 +751,53 @@ mod tests {
                 .await
                 .expect("preserved snapshot");
         assert_eq!(title, "Preserved");
+    }
+
+    #[tokio::test]
+    async fn stores_artist_album_snapshots_with_title_and_size() {
+        let pool = database::test_pool().await;
+        let repository = SqliteCollectionRepository::new(pool.clone());
+        let instance = instance_of_kind("lidarr", InstanceKind::Lidarr);
+        repository
+            .reconcile_instances(std::slice::from_ref(&instance))
+            .await
+            .expect("reconcile");
+
+        let run = repository
+            .create_sync_run(
+                SyncTrigger::Manual,
+                std::slice::from_ref(&instance),
+                Utc::now(),
+            )
+            .await
+            .expect("create run");
+        repository
+            .store_successful_snapshot(
+                run.id,
+                &instance,
+                &Snapshot::Artists(vec![ArtistSnapshot {
+                    musicbrainz_id: "artist-1".to_owned(),
+                    name: "Artist".to_owned(),
+                    size_on_disk_bytes: 800,
+                    file_count: 5,
+                    albums: vec![ArtistAlbumSnapshot {
+                        musicbrainz_id: "album-1".to_owned(),
+                        title: "Album One".to_owned(),
+                        size_on_disk_bytes: 800,
+                        file_count: 5,
+                    }],
+                }]),
+                Utc::now(),
+            )
+            .await
+            .expect("store snapshot");
+
+        let album: (String, i64, i64) = sqlx::query_as(
+            "SELECT title, size_on_disk_bytes, file_count FROM artist_album_snapshots",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("album row");
+        assert_eq!(album, ("Album One".to_owned(), 800, 5));
     }
 }
