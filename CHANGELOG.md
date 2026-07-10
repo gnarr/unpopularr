@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [0.5.0](https://github.com/gnarr/unpopularr/compare/b987e03da3ff7c3683fa08c205a25def44548a99..0.5.0) - 2026-07-10
+#### Features
+- (**catalog**) add movie and artist details - ([b987e03](https://github.com/gnarr/unpopularr/commit/b987e03da3ff7c3683fa08c205a25def44548a99)) - Gunnar Cortes
+
+- - -
+
 ## [0.4.0](https://github.com/gnarr/unpopularr/compare/a302e5cc02822163eb2c94dd8e35c7d844aff3f1..0.4.0) - 2026-07-08
 #### Features
 - (**series**) add episode watch matrix (#11) - ([6874dab](https://github.com/gnarr/unpopularr/commit/6874dab77bec9f0c332b8c4b1fd9c807b057b07f)) - Gunnar Cortes
