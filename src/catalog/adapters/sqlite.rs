@@ -6,9 +6,10 @@ use chrono::{DateTime, Utc};
 use sqlx::{Row, SqlitePool};
 
 use crate::catalog::{
-    ArtistSource, CatalogPlayback, CatalogRepository, CatalogSources, InstanceReference,
-    MovieSource, PlaybackMetrics, SeriesDetailsSources, SeriesEpisodeFile, SeriesEpisodePlayback,
-    SeriesSeasonFiles, SeriesSource,
+    ArtistAlbumFile, ArtistDetailsSources, ArtistSource, CatalogPlayback, CatalogRepository,
+    CatalogSources, InstanceReference, MovieDetailsSources, MovieSource, PlaybackMetrics,
+    SeriesDetailsSources, SeriesEpisodeFile, SeriesEpisodePlayback, SeriesSeasonFiles,
+    SeriesSource,
 };
 
 #[derive(Clone)]
@@ -19,6 +20,48 @@ pub struct SqliteCatalogRepository {
 impl SqliteCatalogRepository {
     pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
+    }
+
+    async fn playback_available(&self) -> Result<bool> {
+        Ok(sqlx::query_scalar::<_, bool>(
+            r#"
+            SELECT EXISTS(
+                SELECT 1
+                FROM playback_sources
+                WHERE last_successful_sync_at IS NOT NULL
+            )
+            "#,
+        )
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
+    /// The stored aggregate for one item, assuming a single playback source
+    /// (a config invariant today).
+    async fn playback_snapshot(
+        &self,
+        content_type: &str,
+        content_id: &str,
+    ) -> Result<Option<PlaybackMetrics>> {
+        sqlx::query(
+            r#"
+            SELECT play_count, play_duration_seconds, last_played_at
+            FROM playback_snapshots
+            WHERE content_type = ?1 AND content_id = ?2
+            "#,
+        )
+        .bind(content_type)
+        .bind(content_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .map(|row| {
+            Ok(PlaybackMetrics {
+                play_count: row.try_get("play_count")?,
+                play_duration_seconds: row.try_get("play_duration_seconds")?,
+                last_played_at: row.try_get("last_played_at")?,
+            })
+        })
+        .transpose()
     }
 }
 
@@ -152,17 +195,7 @@ impl CatalogRepository for SqliteCatalogRepository {
             })
             .collect::<Result<Vec<_>>>()?;
 
-        let playback_available = sqlx::query_scalar::<_, bool>(
-            r#"
-            SELECT EXISTS(
-                SELECT 1
-                FROM playback_sources
-                WHERE last_successful_sync_at IS NOT NULL
-            )
-            "#,
-        )
-        .fetch_one(&self.pool)
-        .await?;
+        let playback_available = self.playback_available().await?;
         let mut playback = CatalogPlayback {
             available: playback_available,
             ..CatalogPlayback::default()
@@ -295,36 +328,10 @@ impl CatalogRepository for SqliteCatalogRepository {
             })
             .collect::<Result<Vec<_>>>()?;
 
-        let playback_available = sqlx::query_scalar::<_, bool>(
-            r#"
-            SELECT EXISTS(
-                SELECT 1
-                FROM playback_sources
-                WHERE last_successful_sync_at IS NOT NULL
-            )
-            "#,
-        )
-        .fetch_one(&self.pool)
-        .await?;
+        let playback_available = self.playback_available().await?;
         let playback = if playback_available {
-            sqlx::query(
-                r#"
-                SELECT play_count, play_duration_seconds, last_played_at
-                FROM playback_snapshots
-                WHERE content_type = 'series' AND content_id = ?1
-                "#,
-            )
-            .bind(tvdb_id.to_string())
-            .fetch_optional(&self.pool)
-            .await?
-            .map(|row| {
-                Ok::<_, anyhow::Error>(PlaybackMetrics {
-                    play_count: row.try_get("play_count")?,
-                    play_duration_seconds: row.try_get("play_duration_seconds")?,
-                    last_played_at: row.try_get("last_played_at")?,
-                })
-            })
-            .transpose()?
+            self.playback_snapshot("series", &tvdb_id.to_string())
+                .await?
         } else {
             None
         };
@@ -387,6 +394,139 @@ impl CatalogRepository for SqliteCatalogRepository {
             seasons,
             episodes,
             episode_playback,
+            playback_available,
+            playback,
+        }))
+    }
+
+    async fn load_movie(&self, tmdb_id: i64) -> Result<Option<MovieDetailsSources>> {
+        let movie_rows = sqlx::query(
+            r#"
+            SELECT m.title, m.year, m.size_on_disk_bytes, m.file_count,
+                   i.id AS instance_id, i.name AS instance_name, i.config_order,
+                   i.last_successful_sync_at
+            FROM movie_snapshots m
+            JOIN instances i ON i.id = m.instance_id
+            WHERE m.tmdb_id = ?1
+            ORDER BY i.config_order
+            "#,
+        )
+        .bind(tmdb_id)
+        .fetch_all(&self.pool)
+        .await?;
+        if movie_rows.is_empty() {
+            return Ok(None);
+        }
+
+        let instances = movie_rows
+            .into_iter()
+            .map(|row| {
+                Ok(MovieSource {
+                    tmdb_id,
+                    title: row.try_get("title")?,
+                    year: row.try_get("year")?,
+                    size_on_disk_bytes: row.try_get("size_on_disk_bytes")?,
+                    file_count: row.try_get("file_count")?,
+                    instance: instance_reference(&row)?,
+                    config_order: row.try_get("config_order")?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let playback_available = self.playback_available().await?;
+        let playback = if playback_available {
+            self.playback_snapshot("movie", &tmdb_id.to_string())
+                .await?
+        } else {
+            None
+        };
+
+        Ok(Some(MovieDetailsSources {
+            instances,
+            playback_available,
+            playback,
+        }))
+    }
+
+    async fn load_artist(&self, musicbrainz_id: &str) -> Result<Option<ArtistDetailsSources>> {
+        let artist_rows = sqlx::query(
+            r#"
+            SELECT a.name, a.size_on_disk_bytes, a.file_count,
+                   i.id AS instance_id, i.name AS instance_name, i.config_order,
+                   i.last_successful_sync_at
+            FROM artist_snapshots a
+            JOIN instances i ON i.id = a.instance_id
+            WHERE a.musicbrainz_id = ?1
+            ORDER BY i.config_order
+            "#,
+        )
+        .bind(musicbrainz_id)
+        .fetch_all(&self.pool)
+        .await?;
+        if artist_rows.is_empty() {
+            return Ok(None);
+        }
+
+        // Ordered by config_order so aggregate_artist's first-wins title merge
+        // picks the same instance that wins the display metadata.
+        let album_rows = sqlx::query(
+            r#"
+            SELECT al.instance_id, al.album_musicbrainz_id, al.title,
+                   al.size_on_disk_bytes, al.file_count
+            FROM artist_album_snapshots al
+            JOIN instances i ON i.id = al.instance_id
+            WHERE al.artist_musicbrainz_id = ?1
+            ORDER BY i.config_order, al.album_musicbrainz_id
+            "#,
+        )
+        .bind(musicbrainz_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut albums = Vec::with_capacity(album_rows.len());
+        let mut album_ids_by_instance = HashMap::<String, Vec<String>>::new();
+        for row in album_rows {
+            let instance_id: String = row.try_get("instance_id")?;
+            let album_musicbrainz_id: String = row.try_get("album_musicbrainz_id")?;
+            albums.push(ArtistAlbumFile {
+                album_musicbrainz_id: album_musicbrainz_id.clone(),
+                title: row.try_get("title")?,
+                size_on_disk_bytes: row.try_get("size_on_disk_bytes")?,
+                file_count: row.try_get("file_count")?,
+            });
+            album_ids_by_instance
+                .entry(instance_id)
+                .or_default()
+                .push(album_musicbrainz_id);
+        }
+
+        let instances = artist_rows
+            .into_iter()
+            .map(|row| {
+                let instance_id: String = row.try_get("instance_id")?;
+                Ok(ArtistSource {
+                    musicbrainz_id: musicbrainz_id.to_owned(),
+                    name: row.try_get("name")?,
+                    size_on_disk_bytes: row.try_get("size_on_disk_bytes")?,
+                    file_count: row.try_get("file_count")?,
+                    album_musicbrainz_ids: album_ids_by_instance
+                        .remove(&instance_id)
+                        .unwrap_or_default(),
+                    instance: instance_reference_with_id(&row, instance_id)?,
+                    config_order: row.try_get("config_order")?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let playback_available = self.playback_available().await?;
+        let playback = if playback_available {
+            self.playback_snapshot("artist", musicbrainz_id).await?
+        } else {
+            None
+        };
+
+        Ok(Some(ArtistDetailsSources {
+            instances,
+            albums,
             playback_available,
             playback,
         }))

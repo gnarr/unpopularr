@@ -4,8 +4,10 @@ import { SyncBadge } from './SyncBadge'
 
 export function Header() {
   const { pathname } = useLocation()
-  // A series detail page drills in from the catalog, so keep the Catalog tab lit.
-  const onCatalog = pathname === '/' || pathname.startsWith('/series')
+  // Detail pages drill in from the catalog, so keep the Catalog tab lit.
+  const onCatalog =
+    pathname === '/' ||
+    ['/series', '/movies', '/artists'].some((prefix) => pathname.startsWith(prefix))
 
   return (
     <header className="sticky top-0 z-20 border-b border-slate-800 bg-slate-950/80 backdrop-blur">

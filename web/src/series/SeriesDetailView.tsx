@@ -3,12 +3,10 @@ import { useSeries } from '../api/queries'
 import { ApiError } from '../api/http'
 import type { SeriesDetails } from '../api/types'
 import { Button } from '../components/Button'
+import { DetailHeaderCard } from '../components/DetailHeaderCard'
 import { EmptyState } from '../components/EmptyState'
-import { InstanceChips } from '../components/InstanceChips'
-import { StatCard } from '../components/StatCard'
-import { StatCardSkeleton, TableSkeleton } from '../components/Skeletons'
-import { TypeBadge } from '../components/TypeBadge'
-import { absoluteTime, formatBytes, formatDuration, relativeTime } from '../lib/format'
+import { InstanceTable } from '../components/InstanceTable'
+import { DetailSkeleton } from '../components/Skeletons'
 import { EpisodeLegend } from './EpisodeLegend'
 import { SeasonCard } from './SeasonCard'
 
@@ -20,18 +18,7 @@ export function SeriesDetailView() {
 
   if (!Number.isFinite(tvdbId)) return <NotFound raw={raw} onBack={() => navigate('/')} />
 
-  if (series.isPending) {
-    return (
-      <div className="space-y-6">
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-          {Array.from({ length: 4 }).map((_, index) => (
-            <StatCardSkeleton key={index} />
-          ))}
-        </div>
-        <TableSkeleton />
-      </div>
-    )
-  }
+  if (series.isPending) return <DetailSkeleton />
 
   if (series.isError) {
     if (series.error instanceof ApiError && series.error.status === 404) {
@@ -61,7 +48,6 @@ function NotFound({ raw, onBack }: { raw?: string; onBack: () => void }) {
 
 function SeriesDetail({ data }: { data: SeriesDetails }) {
   const { playback } = data
-  const neverPlayed = playback !== null && playback.playCount === 0
 
   return (
     <div className="space-y-6">
@@ -69,42 +55,15 @@ function SeriesDetail({ data }: { data: SeriesDetails }) {
         ← Back to catalog
       </Link>
 
-      <section className="rounded-lg border border-slate-800 bg-slate-900/40">
-        <header className="flex flex-wrap items-center gap-3 border-b border-slate-800 px-4 py-3">
-          <TypeBadge type="series" />
-          <h1 className="text-lg font-semibold text-slate-100">
-            {data.displayName} <span className="text-slate-500">({data.year})</span>
-          </h1>
-          <div className="ml-auto">
-            <InstanceChips instances={data.instances} />
-          </div>
-        </header>
-        <div className="grid grid-cols-2 gap-4 p-4 sm:grid-cols-4">
-          <StatCard label="Total size" value={formatBytes(data.sizeOnDiskBytes)} />
-          <StatCard label="Files" value={data.fileCount.toLocaleString()} />
-          {playback !== null && (
-            <>
-              <StatCard
-                label="Plays"
-                value={neverPlayed ? 'Never' : playback.playCount.toLocaleString()}
-                accent={neverPlayed}
-              />
-              <StatCard
-                label="Watch time"
-                value={neverPlayed ? '—' : formatDuration(playback.playDurationSeconds)}
-              />
-            </>
-          )}
-        </div>
-        {playback?.lastPlayedAt && (
-          <div className="border-t border-slate-800 px-4 py-2 text-sm text-slate-400">
-            Last played{' '}
-            <span className="text-slate-200" title={absoluteTime(playback.lastPlayedAt)}>
-              {relativeTime(playback.lastPlayedAt)}
-            </span>
-          </div>
-        )}
-      </section>
+      <DetailHeaderCard
+        type="series"
+        displayName={data.displayName}
+        year={data.year}
+        instances={data.instances}
+        sizeOnDiskBytes={data.sizeOnDiskBytes}
+        fileCount={data.fileCount}
+        playback={playback}
+      />
 
       <section className="space-y-3">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
@@ -127,51 +86,15 @@ function SeriesDetail({ data }: { data: SeriesDetails }) {
         )}
       </section>
 
-      {data.instanceDetails.length > 1 && (
-        <section className="rounded-lg border border-slate-800 bg-slate-900/40">
-          <header className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
-            <h2 className="text-sm font-semibold text-slate-100">Instances</h2>
-          </header>
-          <div className="p-4">
-            <table className="w-full border-separate border-spacing-0 text-sm">
-              <thead>
-                <tr>
-                  <th className="border-b border-slate-800 px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-400">
-                    Instance
-                  </th>
-                  <th className="border-b border-slate-800 px-3 py-2 text-right text-xs font-semibold uppercase tracking-wide text-slate-400">
-                    Size
-                  </th>
-                  <th className="border-b border-slate-800 px-3 py-2 text-right text-xs font-semibold uppercase tracking-wide text-slate-400">
-                    Files
-                  </th>
-                  <th className="border-b border-slate-800 px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-400">
-                    Seasons
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.instanceDetails.map((detail) => (
-                  <tr key={detail.instance.id} className="hover:bg-slate-800/30">
-                    <td className="border-b border-slate-800/60 px-3 py-1.5 text-slate-200">
-                      {detail.instance.name}
-                    </td>
-                    <td className="border-b border-slate-800/60 px-3 py-1.5 text-right tabular-nums">
-                      {formatBytes(detail.sizeOnDiskBytes)}
-                    </td>
-                    <td className="border-b border-slate-800/60 px-3 py-1.5 text-right tabular-nums">
-                      {detail.fileCount.toLocaleString()}
-                    </td>
-                    <td className="border-b border-slate-800/60 px-3 py-1.5 text-slate-400">
-                      {detail.seasonNumbers.length > 0 ? detail.seasonNumbers.join(', ') : '—'}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      )}
+      <InstanceTable
+        extraHeader="Seasons"
+        rows={data.instanceDetails.map((detail) => ({
+          instance: detail.instance,
+          sizeOnDiskBytes: detail.sizeOnDiskBytes,
+          fileCount: detail.fileCount,
+          extra: detail.seasonNumbers.join(', '),
+        }))}
+      />
     </div>
   )
 }

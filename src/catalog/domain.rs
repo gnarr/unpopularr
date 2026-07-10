@@ -122,6 +122,37 @@ pub struct SeriesDetailsSources {
     pub playback: Option<PlaybackMetrics>,
 }
 
+/// Raw per-instance material for a single movie, straight from the repository
+/// before aggregation into [`MovieDetails`].
+#[derive(Clone, Debug, Default)]
+pub struct MovieDetailsSources {
+    pub instances: Vec<MovieSource>,
+    pub playback_available: bool,
+    pub playback: Option<PlaybackMetrics>,
+}
+
+/// One album's on-disk state for a single instance, as read from
+/// `artist_album_snapshots`. Rows arrive ordered by instance `config_order`;
+/// [`aggregate_artist`] merges duplicates (first non-empty title wins,
+/// sizes and file counts are summed).
+#[derive(Clone, Debug)]
+pub struct ArtistAlbumFile {
+    pub album_musicbrainz_id: String,
+    pub title: String,
+    pub size_on_disk_bytes: i64,
+    pub file_count: i64,
+}
+
+/// Raw per-instance material for a single artist, straight from the repository
+/// before aggregation into [`ArtistDetails`].
+#[derive(Clone, Debug, Default)]
+pub struct ArtistDetailsSources {
+    pub instances: Vec<ArtistSource>,
+    pub albums: Vec<ArtistAlbumFile>,
+    pub playback_available: bool,
+    pub playback: Option<PlaybackMetrics>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SeriesEpisodeDetail {
@@ -174,6 +205,65 @@ pub struct SeriesDetails {
     /// aggregates, events without episode positions, and specials. `None` when
     /// playback is unavailable.
     pub unattributed_play_count: Option<i64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MovieInstanceDetail {
+    pub instance: InstanceReference,
+    pub size_on_disk_bytes: i64,
+    pub file_count: i64,
+}
+
+/// A single movie aggregated across every instance that holds it, plus the
+/// per-instance breakdown that the flat catalog list discards.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MovieDetails {
+    pub display_name: String,
+    pub tmdb_id: i64,
+    pub year: i64,
+    pub size_on_disk_bytes: i64,
+    pub file_count: i64,
+    pub instances: Vec<InstanceReference>,
+    pub instance_details: Vec<MovieInstanceDetail>,
+    pub playback: Option<PlaybackMetrics>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtistAlbumDetail {
+    pub music_brainz_id: String,
+    /// Empty for rows synced before the title column existed; the next Lidarr
+    /// sync fills it. The UI renders a fallback label for empty titles.
+    pub title: String,
+    pub size_on_disk_bytes: i64,
+    pub file_count: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtistInstanceDetail {
+    pub instance: InstanceReference,
+    pub size_on_disk_bytes: i64,
+    pub file_count: i64,
+    pub album_count: i64,
+}
+
+/// A single artist aggregated across every instance that holds it, plus the
+/// per-album and per-instance breakdowns that the flat catalog list discards.
+/// Artists carry no year — Lidarr does not model one.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtistDetails {
+    pub display_name: String,
+    pub music_brainz_id: String,
+    pub size_on_disk_bytes: i64,
+    pub file_count: i64,
+    pub instances: Vec<InstanceReference>,
+    pub albums: Vec<ArtistAlbumDetail>,
+    pub instance_details: Vec<ArtistInstanceDetail>,
+    pub playback: Option<PlaybackMetrics>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -508,6 +598,123 @@ struct EpisodeAggregate {
     size_on_disk_bytes: i64,
 }
 
+/// Fold the raw per-instance rows for one movie into the serialized
+/// [`MovieDetails`]. Mirrors [`aggregate_series`], minus the per-season data
+/// movies don't have.
+pub fn aggregate_movie(mut sources: MovieDetailsSources) -> Option<MovieDetails> {
+    sources.instances.sort_by_key(|source| source.config_order);
+    let first = sources.instances.first()?;
+    let tmdb_id = first.tmdb_id;
+    let display_name = first.title.clone();
+    let year = first.year;
+
+    let mut size_on_disk_bytes = 0;
+    let mut file_count = 0;
+    let mut instances = Vec::new();
+    let mut instance_details = Vec::with_capacity(sources.instances.len());
+    for source in sources.instances {
+        size_on_disk_bytes += source.size_on_disk_bytes;
+        file_count += source.file_count;
+        if source.file_count > 0 {
+            instances.push(source.instance.clone());
+        }
+        instance_details.push(MovieInstanceDetail {
+            instance: source.instance,
+            size_on_disk_bytes: source.size_on_disk_bytes,
+            file_count: source.file_count,
+        });
+    }
+
+    Some(MovieDetails {
+        display_name,
+        tmdb_id,
+        year,
+        size_on_disk_bytes,
+        file_count,
+        instances,
+        instance_details,
+        playback: playback_metrics(sources.playback_available, sources.playback.as_ref()),
+    })
+}
+
+/// Fold the raw per-instance rows for one artist into the serialized
+/// [`ArtistDetails`]. Mirrors [`aggregate_series`], with albums in the role
+/// seasons play there: merged across instances and summed.
+pub fn aggregate_artist(mut sources: ArtistDetailsSources) -> Option<ArtistDetails> {
+    sources.instances.sort_by_key(|source| source.config_order);
+    let first = sources.instances.first()?;
+    let music_brainz_id = first.musicbrainz_id.clone();
+    let display_name = first.name.clone();
+
+    let mut size_on_disk_bytes = 0;
+    let mut file_count = 0;
+    let mut instances = Vec::new();
+    let mut instance_details = Vec::with_capacity(sources.instances.len());
+    for source in sources.instances {
+        size_on_disk_bytes += source.size_on_disk_bytes;
+        file_count += source.file_count;
+        if source.file_count > 0 {
+            instances.push(source.instance.clone());
+        }
+        instance_details.push(ArtistInstanceDetail {
+            instance: source.instance,
+            size_on_disk_bytes: source.size_on_disk_bytes,
+            file_count: source.file_count,
+            album_count: i64::try_from(source.album_musicbrainz_ids.len()).unwrap_or(i64::MAX),
+        });
+    }
+
+    // First non-empty title wins (rows arrive ordered by config_order), so a
+    // pre-0007 placeholder row on one instance can't blank a known title.
+    let mut album_map = BTreeMap::<String, AlbumAggregate>::new();
+    for album in sources.albums {
+        match album_map.entry(album.album_musicbrainz_id) {
+            Entry::Vacant(slot) => {
+                slot.insert(AlbumAggregate {
+                    title: album.title,
+                    size_on_disk_bytes: album.size_on_disk_bytes,
+                    file_count: album.file_count,
+                });
+            }
+            Entry::Occupied(mut slot) => {
+                let aggregate = slot.get_mut();
+                if aggregate.title.is_empty() {
+                    aggregate.title = album.title;
+                }
+                aggregate.size_on_disk_bytes += album.size_on_disk_bytes;
+                aggregate.file_count += album.file_count;
+            }
+        }
+    }
+    let mut albums = album_map
+        .into_iter()
+        .map(|(music_brainz_id, aggregate)| ArtistAlbumDetail {
+            music_brainz_id,
+            title: aggregate.title,
+            size_on_disk_bytes: aggregate.size_on_disk_bytes,
+            file_count: aggregate.file_count,
+        })
+        .collect::<Vec<_>>();
+    albums.sort_by_cached_key(|album| (album.title.to_lowercase(), album.music_brainz_id.clone()));
+
+    Some(ArtistDetails {
+        display_name,
+        music_brainz_id,
+        size_on_disk_bytes,
+        file_count,
+        instances,
+        albums,
+        instance_details,
+        playback: playback_metrics(sources.playback_available, sources.playback.as_ref()),
+    })
+}
+
+struct AlbumAggregate {
+    title: String,
+    size_on_disk_bytes: i64,
+    file_count: i64,
+}
+
 fn playback_metrics(available: bool, metrics: Option<&PlaybackMetrics>) -> Option<PlaybackMetrics> {
     available.then(|| {
         metrics
@@ -548,9 +755,11 @@ mod tests {
     use chrono::Utc;
 
     use super::{
-        ArtistSource, CatalogPlayback, CatalogSources, ContentItem, InstanceReference, MovieSource,
-        PlaybackMetrics, SeriesDetailsSources, SeriesEpisodeFile, SeriesEpisodePlayback,
-        SeriesSeasonDetail, SeriesSeasonFiles, SeriesSource, aggregate, aggregate_series,
+        ArtistAlbumFile, ArtistDetailsSources, ArtistSource, CatalogPlayback, CatalogSources,
+        ContentItem, InstanceReference, MovieDetailsSources, MovieSource, PlaybackMetrics,
+        SeriesDetailsSources, SeriesEpisodeFile, SeriesEpisodePlayback, SeriesSeasonDetail,
+        SeriesSeasonFiles, SeriesSource, aggregate, aggregate_artist, aggregate_movie,
+        aggregate_series,
     };
 
     fn instance(id: &str, name: &str) -> InstanceReference {
@@ -1012,5 +1221,260 @@ mod tests {
         });
         let details = aggregate_series(overlapping).expect("series details");
         assert_eq!(details.unattributed_play_count, Some(0));
+    }
+
+    fn movie_source(
+        title: &str,
+        size_on_disk_bytes: i64,
+        file_count: i64,
+        instance: InstanceReference,
+        config_order: i64,
+    ) -> MovieSource {
+        MovieSource {
+            tmdb_id: 10,
+            title: title.to_owned(),
+            year: 2020,
+            size_on_disk_bytes,
+            file_count,
+            instance,
+            config_order,
+        }
+    }
+
+    #[test]
+    fn movie_details_sums_sizes_across_instances_and_uses_first_configured_metadata() {
+        let details = aggregate_movie(MovieDetailsSources {
+            instances: vec![
+                // Deliberately out of config order to prove the sort.
+                movie_source("Other", 400, 1, instance("two", "Two"), 1),
+                movie_source("Movie", 100, 1, instance("one", "One"), 0),
+            ],
+            ..MovieDetailsSources::default()
+        })
+        .expect("movie details");
+
+        assert_eq!(details.display_name, "Movie"); // lowest config_order wins
+        assert_eq!(details.year, 2020);
+        assert_eq!(details.size_on_disk_bytes, 500);
+        assert_eq!(details.file_count, 2);
+        assert_eq!(details.instances.len(), 2);
+        assert_eq!(details.instance_details.len(), 2);
+        assert_eq!(details.instance_details[0].instance.id, "one");
+        assert_eq!(details.instance_details[0].size_on_disk_bytes, 100);
+        assert!(details.playback.is_none());
+    }
+
+    #[test]
+    fn movie_details_excludes_empty_instance_from_header_but_keeps_it_in_details() {
+        let details = aggregate_movie(MovieDetailsSources {
+            instances: vec![
+                movie_source("Movie", 100, 1, instance("full", "Full"), 0),
+                movie_source("Movie", 0, 0, instance("empty", "Empty"), 1),
+            ],
+            ..MovieDetailsSources::default()
+        })
+        .expect("movie details");
+
+        assert_eq!(details.instances.len(), 1);
+        assert_eq!(details.instances[0].id, "full");
+        assert_eq!(details.instance_details.len(), 2);
+        assert!(
+            details
+                .instance_details
+                .iter()
+                .any(|detail| detail.instance.id == "empty" && detail.file_count == 0)
+        );
+    }
+
+    #[test]
+    fn movie_details_distinguishes_playback_availability() {
+        let build = |playback_available, playback| {
+            aggregate_movie(MovieDetailsSources {
+                instances: vec![movie_source("Movie", 100, 1, instance("one", "One"), 0)],
+                playback_available,
+                playback,
+            })
+            .expect("movie details")
+        };
+
+        assert!(build(false, None).playback.is_none());
+        assert!(matches!(
+            build(true, None).playback,
+            Some(PlaybackMetrics { play_count: 0, .. })
+        ));
+        assert!(matches!(
+            build(
+                true,
+                Some(PlaybackMetrics {
+                    play_count: 7,
+                    play_duration_seconds: 900,
+                    last_played_at: None,
+                })
+            )
+            .playback,
+            Some(PlaybackMetrics { play_count: 7, .. })
+        ));
+    }
+
+    #[test]
+    fn movie_details_returns_none_without_instances() {
+        assert!(aggregate_movie(MovieDetailsSources::default()).is_none());
+    }
+
+    fn artist_source(
+        name: &str,
+        size_on_disk_bytes: i64,
+        file_count: i64,
+        album_musicbrainz_ids: Vec<&str>,
+        instance: InstanceReference,
+        config_order: i64,
+    ) -> ArtistSource {
+        ArtistSource {
+            musicbrainz_id: "artist-1".to_owned(),
+            name: name.to_owned(),
+            size_on_disk_bytes,
+            file_count,
+            album_musicbrainz_ids: album_musicbrainz_ids
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+            instance,
+            config_order,
+        }
+    }
+
+    fn album_file(
+        album_musicbrainz_id: &str,
+        title: &str,
+        size_on_disk_bytes: i64,
+        file_count: i64,
+    ) -> ArtistAlbumFile {
+        ArtistAlbumFile {
+            album_musicbrainz_id: album_musicbrainz_id.to_owned(),
+            title: title.to_owned(),
+            size_on_disk_bytes,
+            file_count,
+        }
+    }
+
+    #[test]
+    fn artist_details_sums_sizes_across_instances_and_uses_first_configured_metadata() {
+        let details = aggregate_artist(ArtistDetailsSources {
+            instances: vec![
+                // Deliberately out of config order to prove the sort.
+                artist_source("Other", 400, 3, vec!["a", "b"], instance("two", "Two"), 1),
+                artist_source("Artist", 100, 2, vec!["a"], instance("one", "One"), 0),
+            ],
+            ..ArtistDetailsSources::default()
+        })
+        .expect("artist details");
+
+        assert_eq!(details.display_name, "Artist"); // lowest config_order wins
+        assert_eq!(details.music_brainz_id, "artist-1");
+        assert_eq!(details.size_on_disk_bytes, 500);
+        assert_eq!(details.file_count, 5);
+        assert_eq!(details.instances.len(), 2);
+        assert_eq!(details.instance_details.len(), 2);
+        assert_eq!(details.instance_details[0].instance.id, "one");
+        assert_eq!(details.instance_details[0].album_count, 1);
+        assert_eq!(details.instance_details[1].album_count, 2);
+        assert!(details.playback.is_none());
+    }
+
+    #[test]
+    fn artist_details_merges_albums_across_instances() {
+        let details = aggregate_artist(ArtistDetailsSources {
+            instances: vec![artist_source(
+                "Artist",
+                100,
+                2,
+                vec!["a", "b"],
+                instance("one", "One"),
+                0,
+            )],
+            // Rows arrive ordered by config_order; the first non-empty title
+            // wins (a pre-0007 placeholder can't blank a known title), sizes
+            // and file counts are summed.
+            albums: vec![
+                album_file("a", "", 0, 3),
+                album_file("b", "Beta", 200, 2),
+                album_file("a", "Alpha", 400, 3),
+            ],
+            ..ArtistDetailsSources::default()
+        })
+        .expect("artist details");
+
+        assert_eq!(details.albums.len(), 2);
+        // Sorted by lowercase title.
+        assert_eq!(details.albums[0].title, "Alpha");
+        assert_eq!(details.albums[0].music_brainz_id, "a");
+        assert_eq!(details.albums[0].size_on_disk_bytes, 400);
+        assert_eq!(details.albums[0].file_count, 6);
+        assert_eq!(details.albums[1].title, "Beta");
+    }
+
+    #[test]
+    fn artist_details_excludes_empty_instance_from_header_but_keeps_it_in_details() {
+        let details = aggregate_artist(ArtistDetailsSources {
+            instances: vec![
+                artist_source("Artist", 100, 2, vec!["a"], instance("full", "Full"), 0),
+                artist_source("Artist", 0, 0, vec![], instance("empty", "Empty"), 1),
+            ],
+            ..ArtistDetailsSources::default()
+        })
+        .expect("artist details");
+
+        assert_eq!(details.instances.len(), 1);
+        assert_eq!(details.instances[0].id, "full");
+        assert_eq!(details.instance_details.len(), 2);
+        assert!(
+            details
+                .instance_details
+                .iter()
+                .any(|detail| detail.instance.id == "empty" && detail.file_count == 0)
+        );
+    }
+
+    #[test]
+    fn artist_details_distinguishes_playback_availability() {
+        let build = |playback_available, playback| {
+            aggregate_artist(ArtistDetailsSources {
+                instances: vec![artist_source(
+                    "Artist",
+                    100,
+                    2,
+                    vec!["a"],
+                    instance("one", "One"),
+                    0,
+                )],
+                playback_available,
+                playback,
+                ..ArtistDetailsSources::default()
+            })
+            .expect("artist details")
+        };
+
+        assert!(build(false, None).playback.is_none());
+        assert!(matches!(
+            build(true, None).playback,
+            Some(PlaybackMetrics { play_count: 0, .. })
+        ));
+        assert!(matches!(
+            build(
+                true,
+                Some(PlaybackMetrics {
+                    play_count: 7,
+                    play_duration_seconds: 900,
+                    last_played_at: None,
+                })
+            )
+            .playback,
+            Some(PlaybackMetrics { play_count: 7, .. })
+        ));
+    }
+
+    #[test]
+    fn artist_details_returns_none_without_instances() {
+        assert!(aggregate_artist(ArtistDetailsSources::default()).is_none());
     }
 }

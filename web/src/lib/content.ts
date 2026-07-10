@@ -15,9 +15,15 @@ export function rowId(item: ContentItem): string {
   return `${item.contentType}:${stableId(item)}`
 }
 
-// The detail-page route for an item, or null for types without one yet.
-export function detailPath(item: ContentItem): string | null {
-  return item.contentType === 'series' ? `/series/${item.tvdbId}` : null
+export function detailPath(item: ContentItem): string {
+  switch (item.contentType) {
+    case 'movie':
+      return `/movies/${item.tmdbId}`
+    case 'series':
+      return `/series/${item.tvdbId}`
+    case 'artist':
+      return `/artists/${encodeURIComponent(item.musicBrainzId)}`
+  }
 }
 
 export function year(item: ContentItem): number | null {

@@ -30,6 +30,8 @@ pub fn router(state: AppState) -> Router {
     let api = Router::new()
         .route("/v1/content", get(all_content))
         .route("/v1/series/{tvdb_id}", get(series_details))
+        .route("/v1/movies/{tmdb_id}", get(movie_details))
+        .route("/v1/artists/{musicbrainz_id}", get(artist_details))
         .route("/v1/sync", get(sync_status).post(start_sync));
     let api = if playback_enabled {
         api.route(
@@ -67,6 +69,28 @@ async fn all_content(State(state): State<Arc<AppState>>) -> Response {
 
 async fn series_details(State(state): State<Arc<AppState>>, Path(tvdb_id): Path<i64>) -> Response {
     match state.catalog.series_details(tvdb_id).await {
+        Ok(Some(details)) => Json(details).into_response(),
+        Ok(None) => api_not_found().await,
+        Err(error) => internal_error(error),
+    }
+}
+
+async fn movie_details(State(state): State<Arc<AppState>>, Path(tmdb_id): Path<i64>) -> Response {
+    match state.catalog.movie_details(tmdb_id).await {
+        Ok(Some(details)) => Json(details).into_response(),
+        Ok(None) => api_not_found().await,
+        Err(error) => internal_error(error),
+    }
+}
+
+async fn artist_details(
+    State(state): State<Arc<AppState>>,
+    Path(musicbrainz_id): Path<String>,
+) -> Response {
+    // Stored IDs are lowercased by the Lidarr sync; normalize the URL form so
+    // hand-typed uppercase MBIDs still resolve.
+    let musicbrainz_id = musicbrainz_id.to_ascii_lowercase();
+    match state.catalog.artist_details(&musicbrainz_id).await {
         Ok(Some(details)) => Json(details).into_response(),
         Ok(None) => api_not_found().await,
         Err(error) => internal_error(error),
@@ -581,20 +605,7 @@ mod tests {
     #[tokio::test]
     async fn series_details_aggregates_across_instances_and_reports_playback() {
         let (app, pool) = minimal_app_with_pool().await;
-        for (id, order) in [("a", 0), ("b", 1)] {
-            sqlx::query(
-                r#"
-                INSERT INTO instances (id, name, kind, config_order, last_successful_sync_at)
-                VALUES (?1, ?1, 'sonarr', ?2, ?3)
-                "#,
-            )
-            .bind(id)
-            .bind(order)
-            .bind(chrono::Utc::now())
-            .execute(&pool)
-            .await
-            .expect("insert instance");
-        }
+        insert_instances(&pool, "sonarr").await;
         // Same tvdb_id on two instances with different titles/sizes/file counts.
         sqlx::query(
             r#"
@@ -690,29 +701,7 @@ mod tests {
         assert!(details["playback"].is_null());
         assert!(details["unattributedPlayCount"].is_null());
 
-        sqlx::query(
-            r#"
-            INSERT INTO playback_sources (id, provider, last_successful_sync_at)
-            VALUES ('plex', 'tautulli', ?)
-            "#,
-        )
-        .bind(chrono::Utc::now())
-        .execute(&pool)
-        .await
-        .expect("insert playback source");
-        sqlx::query(
-            r#"
-            INSERT INTO playback_snapshots (
-                source_id, content_type, content_id, play_count,
-                play_duration_seconds, last_played_at
-            )
-            VALUES ('plex', 'series', '55', 9, 1200, ?)
-            "#,
-        )
-        .bind(chrono::Utc::now())
-        .execute(&pool)
-        .await
-        .expect("insert playback snapshot");
+        insert_playback_snapshot(&pool, "series", "55", 9, 1200).await;
         // One event carries its episode position, one predates position capture.
         sqlx::query(
             r#"
@@ -753,5 +742,215 @@ mod tests {
         assert_eq!(season["episodes"][1]["playback"]["playCount"], 0);
         // 9 series plays, 1 attributed to an episode cell.
         assert_eq!(details["unattributedPlayCount"], 8);
+    }
+
+    async fn get_json(app: &axum::Router, uri: &str) -> (StatusCode, Value) {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        (status, serde_json::from_slice(&body).expect("JSON body"))
+    }
+
+    async fn insert_instances(pool: &sqlx::SqlitePool, kind: &str) {
+        for (id, order) in [("a", 0), ("b", 1)] {
+            sqlx::query(
+                r#"
+                INSERT INTO instances (id, name, kind, config_order, last_successful_sync_at)
+                VALUES (?1, ?1, ?2, ?3, ?4)
+                "#,
+            )
+            .bind(id)
+            .bind(kind)
+            .bind(order)
+            .bind(chrono::Utc::now())
+            .execute(pool)
+            .await
+            .expect("insert instance");
+        }
+    }
+
+    async fn insert_playback_snapshot(
+        pool: &sqlx::SqlitePool,
+        content_type: &str,
+        content_id: &str,
+        play_count: i64,
+        play_duration_seconds: i64,
+    ) {
+        sqlx::query(
+            r#"
+            INSERT INTO playback_sources (id, provider, last_successful_sync_at)
+            VALUES ('plex', 'tautulli', ?)
+            "#,
+        )
+        .bind(chrono::Utc::now())
+        .execute(pool)
+        .await
+        .expect("insert playback source");
+        sqlx::query(
+            r#"
+            INSERT INTO playback_snapshots (
+                source_id, content_type, content_id, play_count,
+                play_duration_seconds, last_played_at
+            )
+            VALUES ('plex', ?1, ?2, ?3, ?4, ?5)
+            "#,
+        )
+        .bind(content_type)
+        .bind(content_id)
+        .bind(play_count)
+        .bind(play_duration_seconds)
+        .bind(chrono::Utc::now())
+        .execute(pool)
+        .await
+        .expect("insert playback snapshot");
+    }
+
+    #[tokio::test]
+    async fn movie_details_returns_json_not_found_for_unknown_tmdb() {
+        let app = minimal_app().await;
+        let (status, error) = get_json(&app, "/api/v1/movies/999").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(error["error"], "not found");
+    }
+
+    #[tokio::test]
+    async fn movie_details_aggregates_across_instances_and_reports_playback() {
+        let (app, pool) = minimal_app_with_pool().await;
+        insert_instances(&pool, "radarr").await;
+        // Same tmdb_id on two instances with different titles/sizes/file counts.
+        sqlx::query(
+            r#"
+            INSERT INTO movie_snapshots
+                (instance_id, tmdb_id, title, year, size_on_disk_bytes, file_count)
+            VALUES ('a', 42, 'Movie', 2020, 100, 1), ('b', 42, 'Other', 2021, 400, 1)
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("insert movies");
+
+        let (status, details) = get_json(&app, "/api/v1/movies/42").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(details["displayName"], "Movie"); // lowest config_order wins
+        assert_eq!(details["tmdbId"], 42);
+        assert_eq!(details["year"], 2020);
+        assert_eq!(details["sizeOnDiskBytes"], 500);
+        assert_eq!(details["fileCount"], 2);
+        assert_eq!(details["instances"].as_array().expect("instances").len(), 2);
+        let instance_details = details["instanceDetails"]
+            .as_array()
+            .expect("instance details");
+        assert_eq!(instance_details.len(), 2);
+        assert_eq!(instance_details[0]["instance"]["id"], "a");
+        assert_eq!(instance_details[0]["sizeOnDiskBytes"], 100);
+        assert_eq!(instance_details[1]["sizeOnDiskBytes"], 400);
+        assert!(details["playback"].is_null());
+
+        insert_playback_snapshot(&pool, "movie", "42", 4, 7200).await;
+        let (_, details) = get_json(&app, "/api/v1/movies/42").await;
+        assert_eq!(details["playback"]["playCount"], 4);
+        assert_eq!(details["playback"]["playDurationSeconds"], 7200);
+    }
+
+    #[tokio::test]
+    async fn artist_details_returns_json_not_found_for_unknown_musicbrainz_id() {
+        let app = minimal_app().await;
+        let (status, error) =
+            get_json(&app, "/api/v1/artists/00000000-0000-0000-0000-000000000000").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(error["error"], "not found");
+    }
+
+    #[tokio::test]
+    async fn artist_details_aggregates_albums_and_reports_playback() {
+        let (app, pool) = minimal_app_with_pool().await;
+        insert_instances(&pool, "lidarr").await;
+        sqlx::query(
+            r#"
+            INSERT INTO artist_snapshots
+                (instance_id, musicbrainz_id, name, size_on_disk_bytes, file_count)
+            VALUES ('a', 'artist-1', 'Artist', 500, 6), ('b', 'artist-1', 'Other', 400, 3)
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("insert artists");
+        // A shared album on both instances (sizes/files summed, first title
+        // wins) plus one pre-0007 row without the new columns, proving the
+        // migration defaults ('' / 0) serialize end to end.
+        sqlx::query(
+            r#"
+            INSERT INTO artist_album_snapshots
+                (instance_id, artist_musicbrainz_id, album_musicbrainz_id,
+                 title, size_on_disk_bytes, file_count)
+            VALUES
+                ('a', 'artist-1', 'album-1', 'Alpha', 300, 3),
+                ('b', 'artist-1', 'album-1', 'Alpha (b)', 400, 3)
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("insert albums");
+        sqlx::query(
+            r#"
+            INSERT INTO artist_album_snapshots
+                (instance_id, artist_musicbrainz_id, album_musicbrainz_id, file_count)
+            VALUES ('a', 'artist-1', 'album-legacy', 3)
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("insert legacy album");
+
+        let (status, details) = get_json(&app, "/api/v1/artists/artist-1").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(details["displayName"], "Artist"); // lowest config_order wins
+        assert_eq!(details["musicBrainzId"], "artist-1");
+        assert_eq!(details["sizeOnDiskBytes"], 900);
+        assert_eq!(details["fileCount"], 9);
+        assert_eq!(details["instances"].as_array().expect("instances").len(), 2);
+        // Empty titles sort first; the legacy row keeps the migration defaults.
+        assert_eq!(
+            details["albums"],
+            serde_json::json!([
+                {
+                    "musicBrainzId": "album-legacy",
+                    "title": "",
+                    "sizeOnDiskBytes": 0,
+                    "fileCount": 3,
+                },
+                {
+                    "musicBrainzId": "album-1",
+                    "title": "Alpha",
+                    "sizeOnDiskBytes": 700,
+                    "fileCount": 6,
+                },
+            ])
+        );
+        let instance_details = details["instanceDetails"]
+            .as_array()
+            .expect("instance details");
+        assert_eq!(instance_details[0]["instance"]["id"], "a");
+        assert_eq!(instance_details[0]["albumCount"], 2);
+        assert_eq!(instance_details[1]["albumCount"], 1);
+        assert!(details["playback"].is_null());
+
+        insert_playback_snapshot(&pool, "artist", "artist-1", 12, 3600).await;
+        // Uppercased MBIDs in the URL are normalized to the stored lowercase.
+        let (status, details) = get_json(&app, "/api/v1/artists/ARTIST-1").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(details["playback"]["playCount"], 12);
+        assert_eq!(details["playback"]["playDurationSeconds"], 3600);
     }
 }

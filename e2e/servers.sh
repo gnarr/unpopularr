@@ -26,6 +26,8 @@ docker run --rm --name unpopularr-e2e --network host \
   -e CARGO_TERM_COLOR=never \
   -e UNPOPULARR_CONFIG=/app/e2e/config.toml \
   -e SONARR_HD_API_KEY=secret \
+  -e RADARR_UHD_API_KEY=secret \
+  -e LIDARR_MAIN_API_KEY=secret \
   -e TAUTULLI_API_KEY=secret \
   -v "$PWD":/app -w /app \
   -v unpopularr-cargo-registry:/usr/local/cargo/registry \

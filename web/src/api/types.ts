@@ -91,6 +91,54 @@ export interface SeriesDetails {
   unattributedPlayCount: number | null
 }
 
+// Per-movie detail (GET /api/v1/movies/{tmdbId}). Mirrors the backend
+// `MovieDetails` serde struct.
+export interface MovieInstanceDetail {
+  instance: InstanceReference
+  sizeOnDiskBytes: number
+  fileCount: number
+}
+
+export interface MovieDetails {
+  displayName: string
+  tmdbId: number
+  year: number
+  sizeOnDiskBytes: number
+  fileCount: number
+  instances: InstanceReference[]
+  instanceDetails: MovieInstanceDetail[]
+  playback: PlaybackMetrics | null
+}
+
+// Per-artist detail (GET /api/v1/artists/{musicBrainzId}). Mirrors the backend
+// `ArtistDetails` serde struct. Artists have no year — Lidarr doesn't model one.
+export interface ArtistAlbumDetail {
+  musicBrainzId: string
+  // '' for snapshots synced before the title column existed; the next Lidarr
+  // sync fills it.
+  title: string
+  sizeOnDiskBytes: number
+  fileCount: number
+}
+
+export interface ArtistInstanceDetail {
+  instance: InstanceReference
+  sizeOnDiskBytes: number
+  fileCount: number
+  albumCount: number
+}
+
+export interface ArtistDetails {
+  displayName: string
+  musicBrainzId: string
+  sizeOnDiskBytes: number
+  fileCount: number
+  instances: InstanceReference[]
+  albums: ArtistAlbumDetail[]
+  instanceDetails: ArtistInstanceDetail[]
+  playback: PlaybackMetrics | null
+}
+
 export type SyncTrigger = 'startup' | 'scheduled' | 'manual'
 export type SyncStatus = 'running' | 'succeeded' | 'partial' | 'failed'
 export type InstanceKind = 'sonarr' | 'radarr' | 'lidarr'
