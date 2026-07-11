@@ -44,6 +44,17 @@ describe('buildMoviePlaybackChart — month resolution', () => {
     expect(unplayed.bars.map((bar) => bar.key)).toEqual(['2024-02', '2024-03', '2024-04'])
     expect(unplayed.bars[0].tooltip).toBe('Feb 2024 · no plays')
   })
+
+  it('reports plays even when their duration is unavailable', () => {
+    const chart = buildMoviePlaybackChart(
+      [{ date: '2024-02-15', playCount: 1, playDurationSeconds: 0 }],
+      null,
+      'month',
+      NOW,
+    )
+
+    expect(chart.bars[0].tooltip).toBe('Feb 2024 · 0s · 1 play')
+  })
 })
 
 describe('buildMoviePlaybackChart — finer and coarser resolutions', () => {

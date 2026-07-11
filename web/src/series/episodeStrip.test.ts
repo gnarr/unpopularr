@@ -56,6 +56,24 @@ describe('buildEpisodeStrip', () => {
     expect(strip.seasons[0].bars.map((b) => b.episodeNumber)).toEqual([1])
   })
 
+  it('includes watched episodes without files or reliable release dates', () => {
+    const strip = buildEpisodeStrip(
+      [
+        season(1, [
+          episode({
+            hasFile: false,
+            airDateUtc: null,
+            playback: watched(60, '2026-06-20T00:00:00Z'),
+          }),
+        ]),
+      ],
+      NOW,
+    )
+
+    expect(strip.seasons[0].bars).toHaveLength(1)
+    expect(strip.hasWatchData).toBe(true)
+  })
+
   it('normalizes heights to the most-watched episode and zeroes the unwatched', () => {
     const strip = buildEpisodeStrip(
       [

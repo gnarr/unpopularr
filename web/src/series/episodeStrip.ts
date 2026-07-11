@@ -42,16 +42,19 @@ export function episodeBarClass(
 }
 
 // Flatten seasons → episodes (both already ascending) into one ordered strip.
-// Only released episodes get a bar (`hasFile || aired`); unaired episodes can't
-// have been watched and would only pad the axis. Heights are normalized to the
-// most-watched episode across the whole series.
+// Released or watched episodes get a bar; otherwise unaired episodes would only
+// pad the axis. Heights are normalized to the most-watched episode across the
+// whole series.
 export function buildEpisodeStrip(
   seasons: SeriesSeasonDetail[],
   now: number = Date.now(),
 ): EpisodeStrip {
   const released = seasons.map((season) => ({
     seasonNumber: season.seasonNumber,
-    episodes: season.episodes.filter((episode) => episode.hasFile || isAired(episode, now)),
+    episodes: season.episodes.filter(
+      (episode) =>
+        episode.hasFile || isAired(episode, now) || (episode.playback?.playCount ?? 0) > 0,
+    ),
   }))
   const maxSeconds = Math.max(
     0,
