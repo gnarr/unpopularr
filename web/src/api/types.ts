@@ -13,6 +13,16 @@ export interface PlaybackMetrics {
   lastPlayedAt: string | null
 }
 
+// One calendar month of movie playback (UTC), from the backend's month-bucketed
+// aggregation. Only months that had playback are present; the chart fills the
+// gaps to a continuous axis.
+export interface MonthlyPlayback {
+  // `YYYY-MM` (UTC).
+  month: string
+  playCount: number
+  playDurationSeconds: number
+}
+
 interface ContentBase {
   displayName: string
   sizeOnDiskBytes: number
@@ -108,6 +118,11 @@ export interface MovieDetails {
   instances: InstanceReference[]
   instanceDetails: MovieInstanceDetail[]
   playback: PlaybackMetrics | null
+  // Earliest Radarr "added" date across instances — the plot's left edge.
+  // `null` until a re-sync populates it (fall back to the first played month).
+  availableAt: string | null
+  // Per-month playback totals, ascending by month.
+  monthlyPlayback: MonthlyPlayback[]
 }
 
 // Per-artist detail (GET /api/v1/artists/{musicBrainzId}). Mirrors the backend

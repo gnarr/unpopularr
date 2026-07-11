@@ -173,9 +173,10 @@ impl CollectionRepository for SqliteCollectionRepository {
                     sqlx::query(
                         r#"
                         INSERT INTO movie_snapshots (
-                            instance_id, tmdb_id, title, year, size_on_disk_bytes, file_count
+                            instance_id, tmdb_id, title, year, size_on_disk_bytes,
+                            file_count, added_at
                         )
-                        VALUES (?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
                         "#,
                     )
                     .bind(&instance.id)
@@ -184,6 +185,7 @@ impl CollectionRepository for SqliteCollectionRepository {
                     .bind(movie.year)
                     .bind(movie.size_on_disk_bytes)
                     .bind(movie.file_count)
+                    .bind(movie.added_at)
                     .execute(&mut *transaction)
                     .await?;
                 }
@@ -598,6 +600,7 @@ mod tests {
                     year: 2024,
                     size_on_disk_bytes: 100,
                     file_count: 1,
+                    added_at: None,
                 }]),
                 Utc::now(),
             )
@@ -717,6 +720,7 @@ mod tests {
                     year: 2024,
                     size_on_disk_bytes: 100,
                     file_count: 1,
+                    added_at: None,
                 }]),
                 Utc::now(),
             )

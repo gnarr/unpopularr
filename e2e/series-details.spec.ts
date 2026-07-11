@@ -52,3 +52,22 @@ test('season cards render the episode matrix with watch states', async ({ page }
 
   await page.screenshot({ path: 'test-results/series-details.png', fullPage: true })
 })
+
+test('renders the watch-time-by-episode strip', async ({ page }) => {
+  await page.goto('/series/7777')
+  await expect(page.getByRole('heading', { name: 'Watch time by episode' })).toBeVisible()
+
+  const strip = page.getByTestId('episode-playback-strip')
+  await expect(strip).toBeVisible()
+  // One bar per released episode (unaired S02E02 is excluded).
+  expect(await strip.getByTestId('episode-bar').count()).toBeGreaterThan(0)
+
+  // The watched pilot's bar reuses the episode tooltip and the indigo fill.
+  const pilot = strip.getByTitle(/^S01E01/)
+  await expect(pilot).toHaveAttribute('title', /Pilot .* 1 play · watched/)
+  await expect(pilot.locator('div')).toHaveClass(/bg-indigo-500/)
+
+  // On disk but never watched: baseline tick in the deletion red.
+  const growth = strip.getByTitle(/^S01E02/)
+  await expect(growth.locator('div')).toHaveClass(/bg-red-500/)
+})

@@ -45,6 +45,19 @@ impl PlaybackMetrics {
     }
 }
 
+/// Read-time playback aggregate for one calendar month of a movie, computed from
+/// `playback_events` grouped by month. Drives the movie details
+/// minutes-per-month plot. Only months that had playback are present; the
+/// frontend fills the gaps to a continuous axis.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MonthlyPlayback {
+    /// Calendar month as `YYYY-MM` in UTC.
+    pub month: String,
+    pub play_count: i64,
+    pub play_duration_seconds: i64,
+}
+
 #[derive(Clone, Debug)]
 pub struct MovieSource {
     pub tmdb_id: i64,
@@ -52,6 +65,10 @@ pub struct MovieSource {
     pub year: i64,
     pub size_on_disk_bytes: i64,
     pub file_count: i64,
+    /// When this instance's Radarr added the movie. `None` before a re-sync
+    /// populates the column, or when Radarr omits it. Details-only; the flat
+    /// catalog list leaves it `None`.
+    pub available_at: Option<DateTime<Utc>>,
     pub instance: InstanceReference,
     pub config_order: i64,
 }
@@ -127,6 +144,9 @@ pub struct SeriesDetailsSources {
 #[derive(Clone, Debug, Default)]
 pub struct MovieDetailsSources {
     pub instances: Vec<MovieSource>,
+    /// Per-month playback totals, ascending by month. Empty when playback is
+    /// unavailable or the movie has never been played.
+    pub monthly_playback: Vec<MonthlyPlayback>,
     pub playback_available: bool,
     pub playback: Option<PlaybackMetrics>,
 }
@@ -228,6 +248,11 @@ pub struct MovieDetails {
     pub instances: Vec<InstanceReference>,
     pub instance_details: Vec<MovieInstanceDetail>,
     pub playback: Option<PlaybackMetrics>,
+    /// Earliest Radarr "added" date across instances — the plot's left edge.
+    /// `None` until a re-sync populates it.
+    pub available_at: Option<DateTime<Utc>>,
+    /// Per-month playback totals, ascending by month.
+    pub monthly_playback: Vec<MonthlyPlayback>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -610,11 +635,15 @@ pub fn aggregate_movie(mut sources: MovieDetailsSources) -> Option<MovieDetails>
 
     let mut size_on_disk_bytes = 0;
     let mut file_count = 0;
+    let mut available_at: Option<DateTime<Utc>> = None;
     let mut instances = Vec::new();
     let mut instance_details = Vec::with_capacity(sources.instances.len());
     for source in sources.instances {
         size_on_disk_bytes += source.size_on_disk_bytes;
         file_count += source.file_count;
+        if let Some(added) = source.available_at {
+            available_at = Some(available_at.map_or(added, |current| current.min(added)));
+        }
         if source.file_count > 0 {
             instances.push(source.instance.clone());
         }
@@ -634,6 +663,8 @@ pub fn aggregate_movie(mut sources: MovieDetailsSources) -> Option<MovieDetails>
         instances,
         instance_details,
         playback: playback_metrics(sources.playback_available, sources.playback.as_ref()),
+        available_at,
+        monthly_playback: sources.monthly_playback,
     })
 }
 
@@ -756,10 +787,10 @@ mod tests {
 
     use super::{
         ArtistAlbumFile, ArtistDetailsSources, ArtistSource, CatalogPlayback, CatalogSources,
-        ContentItem, InstanceReference, MovieDetailsSources, MovieSource, PlaybackMetrics,
-        SeriesDetailsSources, SeriesEpisodeFile, SeriesEpisodePlayback, SeriesSeasonDetail,
-        SeriesSeasonFiles, SeriesSource, aggregate, aggregate_artist, aggregate_movie,
-        aggregate_series,
+        ContentItem, InstanceReference, MonthlyPlayback, MovieDetailsSources, MovieSource,
+        PlaybackMetrics, SeriesDetailsSources, SeriesEpisodeFile, SeriesEpisodePlayback,
+        SeriesSeasonDetail, SeriesSeasonFiles, SeriesSource, aggregate, aggregate_artist,
+        aggregate_movie, aggregate_series,
     };
 
     fn instance(id: &str, name: &str) -> InstanceReference {
@@ -780,6 +811,7 @@ mod tests {
                     year: 2020,
                     size_on_disk_bytes: 100,
                     file_count: 1,
+                    available_at: None,
                     instance: instance("hd", "HD"),
                     config_order: 0,
                 },
@@ -789,6 +821,7 @@ mod tests {
                     year: 2021,
                     size_on_disk_bytes: 400,
                     file_count: 1,
+                    available_at: None,
                     instance: instance("uhd", "4K"),
                     config_order: 1,
                 },
@@ -822,6 +855,7 @@ mod tests {
                 year: 2022,
                 size_on_disk_bytes: 0,
                 file_count: 0,
+                available_at: None,
                 instance: shared_instance.clone(),
                 config_order: 0,
             }],
@@ -895,6 +929,7 @@ mod tests {
             year: 2024,
             size_on_disk_bytes: 100,
             file_count: 1,
+            available_at: None,
             instance: instance("one", "One"),
             config_order: 0,
         };
@@ -1236,6 +1271,7 @@ mod tests {
             year: 2020,
             size_on_disk_bytes,
             file_count,
+            available_at: None,
             instance,
             config_order,
         }
@@ -1293,6 +1329,7 @@ mod tests {
                 instances: vec![movie_source("Movie", 100, 1, instance("one", "One"), 0)],
                 playback_available,
                 playback,
+                ..MovieDetailsSources::default()
             })
             .expect("movie details")
         };
@@ -1319,6 +1356,46 @@ mod tests {
     #[test]
     fn movie_details_returns_none_without_instances() {
         assert!(aggregate_movie(MovieDetailsSources::default()).is_none());
+    }
+
+    #[test]
+    fn movie_details_takes_earliest_availability_and_passes_monthly_playback() {
+        let early = chrono::DateTime::from_timestamp(1_000, 0);
+        let late = chrono::DateTime::from_timestamp(2_000, 0);
+        let with_availability = |available_at, config_order| {
+            let mut source = movie_source("Movie", 100, 1, instance("one", "One"), config_order);
+            source.available_at = available_at;
+            source
+        };
+
+        let details = aggregate_movie(MovieDetailsSources {
+            // The later-added instance sorts first to prove min, not first-wins.
+            instances: vec![
+                with_availability(late, 0),
+                with_availability(early, 1),
+                with_availability(None, 2),
+            ],
+            monthly_playback: vec![
+                MonthlyPlayback {
+                    month: "2024-01".to_owned(),
+                    play_count: 2,
+                    play_duration_seconds: 3_600,
+                },
+                MonthlyPlayback {
+                    month: "2024-03".to_owned(),
+                    play_count: 1,
+                    play_duration_seconds: 1_800,
+                },
+            ],
+            playback_available: true,
+            playback: None,
+        })
+        .expect("movie details");
+
+        assert_eq!(details.available_at, early);
+        assert_eq!(details.monthly_playback.len(), 2);
+        assert_eq!(details.monthly_playback[0].month, "2024-01");
+        assert_eq!(details.monthly_playback[1].play_duration_seconds, 1_800);
     }
 
     fn artist_source(

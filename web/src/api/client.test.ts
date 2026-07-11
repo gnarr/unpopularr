@@ -65,6 +65,8 @@ describe('getMovie', () => {
       instances: [],
       instanceDetails: [],
       playback: null,
+      availableAt: null,
+      monthlyPlayback: [],
     }
     const fetchMock = stubFetch({ status: 200, ok: true, jsonImpl: () => Promise.resolve(details) })
 
