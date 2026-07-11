@@ -28,20 +28,24 @@ test('shows size, file, and playback stats without an instance table', async ({ 
   await page.screenshot({ path: 'test-results/movie-details.png', fullPage: true })
 })
 
-test('renders the minutes-played-per-month chart', async ({ page }) => {
+test('renders the minutes-played chart with a resolution toggle', async ({ page }) => {
   await page.goto('/movies/550')
-  await expect(page.getByRole('heading', { name: 'Minutes played per month' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Minutes played' })).toBeVisible()
 
   const chart = page.getByTestId('movie-playback-chart')
   await expect(chart).toBeVisible()
 
-  // A continuous axis from the Radarr "added" date (Jan 2025) through the
-  // current month: many months, with the single play's month filled in.
-  const bars = chart.getByTestId('month-bar')
-  expect(await bars.count()).toBeGreaterThan(1)
+  // Default month resolution: a continuous axis from the Radarr "added" date
+  // (Jan 2025) through the current month, with the single play's month filled.
+  const monthBars = await chart.getByTestId('chart-bar').count()
+  expect(monthBars).toBeGreaterThan(1)
 
-  // Played months carry a duration + play-count tooltip (two separators);
-  // empty months read "… · no plays".
+  // Played buckets carry a duration + play-count tooltip (two separators);
+  // empty buckets read "… · no plays".
   await expect(chart.getByTitle(/·[^·]*·[^·]*play/).first()).toBeVisible()
   await expect(chart.getByTitle(/· no plays/).first()).toBeVisible()
+
+  // Switching to a finer resolution re-buckets client-side into more bars.
+  await page.getByRole('button', { name: 'Week' }).click()
+  expect(await chart.getByTestId('chart-bar').count()).toBeGreaterThan(monthBars)
 })

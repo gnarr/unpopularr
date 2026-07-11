@@ -1,26 +1,33 @@
-import type { MonthlyPlayback } from '../api/types'
+import type { DailyPlayback } from '../api/types'
 import { formatDuration } from '../lib/format'
 
-// One bar in the movie chart: a single calendar month on a continuous axis.
-export interface MonthBar {
-  month: string // YYYY-MM (UTC)
-  label: string // e.g. "Jan 2024"
+export type Resolution = 'day' | 'week' | 'month' | 'year'
+
+export const RESOLUTIONS: Resolution[] = ['day', 'week', 'month', 'year']
+
+// One bar on the chart: a single day/week/month/year bucket on a continuous axis.
+export interface ChartBar {
+  // Stable bucket key (its start), unique within the chart.
+  key: string
+  label: string
   minutes: number
   playCount: number
-  // 0–100, this month's share of the busiest month.
+  // 0–100, this bucket's share of the busiest visible bucket.
   heightPercent: number
   tooltip: string
 }
 
 export interface MoviePlaybackChart {
-  bars: MonthBar[]
-  // False when there's no month to anchor the axis, or nothing was ever played.
+  bars: ChartBar[]
+  // False when the visible window has no plays (all baseline). The section
+  // still renders so the resolution toggle stays reachable.
   hasData: boolean
 }
 
-// Defensive cap so a garbage availability date can't spin a runaway axis; the
-// visible window is at most this many months, anchored at the end.
-const MAX_MONTHS = 240
+// Cap on rendered bars, uniform across resolutions: a coarse resolution shows
+// decades, a fine one a bounded recent window. Guards the DOM and any garbage
+// availability date; the oldest (leading) buckets are clipped first.
+const MAX_BARS = 400
 
 const MONTH_NAMES = [
   'Jan',
@@ -37,80 +44,129 @@ const MONTH_NAMES = [
   'Dec',
 ]
 
-// Build a continuous month axis from the movie's availability (or its first
-// played month, before a re-sync fills `availableAt`) through the current month,
-// filling months with no plays as zero-height bars.
+// Build a continuous axis at the chosen resolution, from the movie's
+// availability (or its first played bucket, before a re-sync fills `availableAt`)
+// through the current bucket, filling empty buckets with zero-height bars.
 export function buildMoviePlaybackChart(
-  monthlyPlayback: MonthlyPlayback[],
+  dailyPlayback: DailyPlayback[],
   availableAt: string | null,
+  resolution: Resolution = 'month',
   now: number = Date.now(),
 ): MoviePlaybackChart {
-  const byMonth = new Map(monthlyPlayback.map((entry) => [entry.month, entry]))
-  const playedMonths = monthlyPlayback.map((entry) => entry.month).filter(isMonthKey)
-  const availableMonth = availableAt ? monthKeyOf(new Date(availableAt)) : null
+  // Fold the per-day rows into the chosen bucket, tracking the earliest play.
+  const totals = new Map<string, { seconds: number; count: number }>()
+  let earliestPlayed: Date | null = null
+  for (const entry of dailyPlayback) {
+    const day = parseDay(entry.date)
+    if (day === null) continue
+    const start = bucketStart(day, resolution)
+    const key = bucketKey(start, resolution)
+    const bucket = totals.get(key)
+    if (bucket) {
+      bucket.seconds += entry.playDurationSeconds
+      bucket.count += entry.playCount
+    } else {
+      totals.set(key, { seconds: entry.playDurationSeconds, count: entry.playCount })
+    }
+    if (earliestPlayed === null || start < earliestPlayed) earliestPlayed = start
+  }
 
-  const starts = [availableMonth, playedMonths.at(0)].filter(
-    (month): month is string => month != null,
-  )
-  if (starts.length === 0) return { bars: [], hasData: false }
+  const availableStart = availableAt ? bucketStart(new Date(availableAt), resolution) : null
+  const anchors = [availableStart, earliestPlayed].filter((date): date is Date => date !== null)
+  if (anchors.length === 0) return { bars: [], hasData: false }
 
-  const currentMonth = monthKeyOf(new Date(now))
-  const lastPlayed = playedMonths.at(-1)
-  const startIndex = Math.min(...starts.map(toMonthIndex))
-  const endIndex = Math.max(toMonthIndex(currentMonth), lastPlayed ? toMonthIndex(lastPlayed) : 0)
-  const clampedStart = Math.max(startIndex, endIndex - (MAX_MONTHS - 1))
-  const from = Math.min(clampedStart, endIndex)
+  const end = bucketStart(new Date(now), resolution)
+  const anchor = anchors.reduce((earliest, date) => (date < earliest ? date : earliest))
+  const floor = subtractBuckets(end, resolution, MAX_BARS - 1)
+  let start = anchor < floor ? floor : anchor
+  if (start > end) start = end
 
-  const maxSeconds = Math.max(
-    0,
-    ...monthlyPlayback.map((entry) => entry.playDurationSeconds),
-  )
-  const bars: MonthBar[] = []
-  for (let index = from; index <= endIndex; index += 1) {
-    const month = fromMonthIndex(index)
-    const entry = byMonth.get(month)
-    const seconds = entry?.playDurationSeconds ?? 0
-    const playCount = entry?.playCount ?? 0
-    const label = monthLabel(month)
-    bars.push({
-      month,
-      label,
-      minutes: seconds / 60,
-      playCount,
-      heightPercent: maxSeconds > 0 ? (seconds / maxSeconds) * 100 : 0,
-      tooltip:
-        seconds > 0
-          ? `${label} · ${formatDuration(seconds)} · ${playCount} ${playCount === 1 ? 'play' : 'plays'}`
-          : `${label} · no plays`,
+  // Materialize the visible buckets, then scale to the busiest visible one so a
+  // clipped older spike can't flatten the rest.
+  const raw: Array<{ key: string; label: string; seconds: number; count: number }> = []
+  for (let cursor = start; cursor <= end; cursor = addBucket(cursor, resolution)) {
+    const key = bucketKey(cursor, resolution)
+    const bucket = totals.get(key)
+    raw.push({
+      key,
+      label: bucketLabel(cursor, resolution),
+      seconds: bucket?.seconds ?? 0,
+      count: bucket?.count ?? 0,
     })
   }
+
+  const maxSeconds = Math.max(0, ...raw.map((entry) => entry.seconds))
+  const bars = raw.map((entry) => ({
+    key: entry.key,
+    label: entry.label,
+    minutes: entry.seconds / 60,
+    playCount: entry.count,
+    heightPercent: maxSeconds > 0 ? (entry.seconds / maxSeconds) * 100 : 0,
+    tooltip:
+      entry.seconds > 0
+        ? `${entry.label} · ${formatDuration(entry.seconds)} · ${entry.count} ${entry.count === 1 ? 'play' : 'plays'}`
+        : `${entry.label} · no plays`,
+  }))
 
   return { bars, hasData: maxSeconds > 0 }
 }
 
-function isMonthKey(value: string): boolean {
-  return /^\d{4}-\d{2}$/.test(value)
+// Parse a `YYYY-MM-DD` day key to a UTC Date, or null if malformed.
+function parseDay(date: string): Date | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null
+  const [year, month, day] = date.split('-').map(Number)
+  return new Date(Date.UTC(year, month - 1, day))
 }
 
-// A month as a single integer (year * 12 + zero-based month) for easy iteration.
-function toMonthIndex(month: string): number {
-  const [year, monthNumber] = month.split('-').map(Number)
-  return year * 12 + (monthNumber - 1)
-}
-
-function fromMonthIndex(index: number): string {
-  const year = Math.floor(index / 12)
-  const monthNumber = (index % 12) + 1
-  return `${year}-${String(monthNumber).padStart(2, '0')}`
-}
-
-function monthKeyOf(date: Date): string {
+// The UTC start of the bucket containing `date`: the day, the Monday of its
+// week, the first of its month, or January 1 of its year.
+function bucketStart(date: Date, resolution: Resolution): Date {
   const year = date.getUTCFullYear()
-  const monthNumber = date.getUTCMonth() + 1
-  return `${year}-${String(monthNumber).padStart(2, '0')}`
+  const month = date.getUTCMonth()
+  const day = date.getUTCDate()
+  if (resolution === 'year') return new Date(Date.UTC(year, 0, 1))
+  if (resolution === 'month') return new Date(Date.UTC(year, month, 1))
+  if (resolution === 'week') {
+    // ISO weeks start Monday; getUTCDay is 0 (Sun) … 6 (Sat).
+    const daysSinceMonday = (date.getUTCDay() + 6) % 7
+    return new Date(Date.UTC(year, month, day - daysSinceMonday))
+  }
+  return new Date(Date.UTC(year, month, day))
 }
 
-function monthLabel(month: string): string {
-  const [year, monthNumber] = month.split('-').map(Number)
-  return `${MONTH_NAMES[monthNumber - 1]} ${year}`
+function addBucket(date: Date, resolution: Resolution): Date {
+  const year = date.getUTCFullYear()
+  const month = date.getUTCMonth()
+  const day = date.getUTCDate()
+  if (resolution === 'year') return new Date(Date.UTC(year + 1, 0, 1))
+  if (resolution === 'month') return new Date(Date.UTC(year, month + 1, 1))
+  return new Date(Date.UTC(year, month, day + (resolution === 'week' ? 7 : 1)))
+}
+
+function subtractBuckets(date: Date, resolution: Resolution, count: number): Date {
+  const year = date.getUTCFullYear()
+  const month = date.getUTCMonth()
+  const day = date.getUTCDate()
+  if (resolution === 'year') return new Date(Date.UTC(year - count, 0, 1))
+  if (resolution === 'month') return new Date(Date.UTC(year, month - count, 1))
+  return new Date(Date.UTC(year, month, day - count * (resolution === 'week' ? 7 : 1)))
+}
+
+function bucketKey(date: Date, resolution: Resolution): string {
+  const year = date.getUTCFullYear()
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0')
+  const day = String(date.getUTCDate()).padStart(2, '0')
+  if (resolution === 'year') return `${year}`
+  if (resolution === 'month') return `${year}-${month}`
+  return `${year}-${month}-${day}` // day and week both keyed by their start day
+}
+
+function bucketLabel(date: Date, resolution: Resolution): string {
+  const year = date.getUTCFullYear()
+  const monthName = MONTH_NAMES[date.getUTCMonth()]
+  const day = date.getUTCDate()
+  if (resolution === 'year') return `${year}`
+  if (resolution === 'month') return `${monthName} ${year}`
+  if (resolution === 'week') return `Week of ${monthName} ${day}, ${year}`
+  return `${monthName} ${day}, ${year}`
 }

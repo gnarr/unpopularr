@@ -870,7 +870,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn movie_details_reports_availability_and_monthly_playback() {
+    async fn movie_details_reports_availability_and_daily_playback() {
         let (app, pool) = minimal_app_with_pool().await;
         insert_instances(&pool, "radarr").await;
         // Same movie on two instances added on different dates; the earliest
@@ -888,12 +888,12 @@ mod tests {
         .await
         .expect("insert movies");
 
-        // A playback source makes playback available; events span two months
-        // (two sessions in January, one in March) to prove the month buckets.
+        // A playback source makes playback available; two sessions on the same
+        // day (summed) plus one on a later day prove the per-day buckets.
         insert_playback_snapshot(&pool, "movie", "42", 3, 2100).await;
         for (row_id, played_at, duration) in [
-            (1_i64, "2024-01-10T00:00:00Z", 600_i64),
-            (2, "2024-01-20T00:00:00Z", 300),
+            (1_i64, "2024-01-10T08:00:00Z", 600_i64),
+            (2, "2024-01-10T20:00:00Z", 300),
             (3, "2024-03-05T00:00:00Z", 1200),
         ] {
             sqlx::query(
@@ -916,20 +916,20 @@ mod tests {
         let (status, details) = get_json(&app, "/api/v1/movies/42").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(details["availableAt"], "2023-05-01T00:00:00Z");
-        let monthly = details["monthlyPlayback"].as_array().expect("monthly");
-        assert_eq!(monthly.len(), 2);
+        let daily = details["dailyPlayback"].as_array().expect("daily");
+        assert_eq!(daily.len(), 2);
         assert_eq!(
-            monthly[0],
+            daily[0],
             serde_json::json!({
-                "month": "2024-01",
+                "date": "2024-01-10",
                 "playCount": 2,
                 "playDurationSeconds": 900,
             })
         );
         assert_eq!(
-            monthly[1],
+            daily[1],
             serde_json::json!({
-                "month": "2024-03",
+                "date": "2024-03-05",
                 "playCount": 1,
                 "playDurationSeconds": 1200,
             })

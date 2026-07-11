@@ -8,7 +8,6 @@ import { EmptyState } from '../components/EmptyState'
 import { InstanceTable } from '../components/InstanceTable'
 import { DetailSkeleton } from '../components/Skeletons'
 import { MoviePlaybackChart } from './MoviePlaybackChart'
-import { buildMoviePlaybackChart } from './moviePlaybackChart'
 
 export function MovieDetailView() {
   const { tmdbId: raw } = useParams()
@@ -47,8 +46,6 @@ function NotFound({ raw, onBack }: { raw?: string; onBack: () => void }) {
 }
 
 function MovieDetail({ data }: { data: MovieDetails }) {
-  const chart = buildMoviePlaybackChart(data.monthlyPlayback, data.availableAt)
-
   return (
     <div className="space-y-6">
       <Link to="/" className="inline-block text-sm text-slate-400 hover:text-slate-200">
@@ -65,13 +62,13 @@ function MovieDetail({ data }: { data: MovieDetails }) {
         playback={data.playback}
       />
 
-      {data.playback !== null && chart.hasData && (
+      {data.playback !== null && data.dailyPlayback.length > 0 && (
         <section className="rounded-lg border border-slate-800 bg-slate-900/40">
           <header className="border-b border-slate-800 px-4 py-3">
-            <h2 className="text-sm font-semibold text-slate-100">Minutes played per month</h2>
+            <h2 className="text-sm font-semibold text-slate-100">Minutes played</h2>
           </header>
           <div className="p-4">
-            <MoviePlaybackChart chart={chart} />
+            <MoviePlaybackChart dailyPlayback={data.dailyPlayback} availableAt={data.availableAt} />
           </div>
         </section>
       )}

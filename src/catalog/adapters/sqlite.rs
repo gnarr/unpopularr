@@ -7,7 +7,7 @@ use sqlx::{Row, SqlitePool};
 
 use crate::catalog::{
     ArtistAlbumFile, ArtistDetailsSources, ArtistSource, CatalogPlayback, CatalogRepository,
-    CatalogSources, InstanceReference, MonthlyPlayback, MovieDetailsSources, MovieSource,
+    CatalogSources, DailyPlayback, InstanceReference, MovieDetailsSources, MovieSource,
     PlaybackMetrics, SeriesDetailsSources, SeriesEpisodeFile, SeriesEpisodePlayback,
     SeriesSeasonFiles, SeriesSource,
 };
@@ -64,20 +64,21 @@ impl SqliteCatalogRepository {
         .transpose()
     }
 
-    /// Per-calendar-month playback totals for one movie, ascending by month.
-    /// `substr(played_at, 1, 7)` takes the `YYYY-MM` prefix of the stored UTC
-    /// RFC3339 timestamp — the events are always UTC, so this is the UTC month.
-    /// Only months that had playback appear; the frontend fills the gaps.
-    async fn monthly_movie_playback(&self, tmdb_id: i64) -> Result<Vec<MonthlyPlayback>> {
+    /// Per-calendar-day playback totals for one movie, ascending by day.
+    /// `substr(played_at, 1, 10)` takes the `YYYY-MM-DD` prefix of the stored
+    /// UTC RFC3339 timestamp — events are always UTC, so this is the UTC day.
+    /// Only days that had playback appear; the frontend fills the gaps and
+    /// re-buckets to the resolution the user picks.
+    async fn daily_movie_playback(&self, tmdb_id: i64) -> Result<Vec<DailyPlayback>> {
         sqlx::query(
             r#"
-            SELECT substr(played_at, 1, 7) AS month,
+            SELECT substr(played_at, 1, 10) AS date,
                    COUNT(*) AS play_count,
                    COALESCE(SUM(duration_seconds), 0) AS play_duration_seconds
             FROM playback_events
             WHERE content_type = 'movie' AND content_id = ?1
-            GROUP BY month
-            ORDER BY month
+            GROUP BY date
+            ORDER BY date
             "#,
         )
         .bind(tmdb_id.to_string())
@@ -85,8 +86,8 @@ impl SqliteCatalogRepository {
         .await?
         .into_iter()
         .map(|row| {
-            Ok(MonthlyPlayback {
-                month: row.try_get("month")?,
+            Ok(DailyPlayback {
+                date: row.try_get("date")?,
                 play_count: row.try_get("play_count")?,
                 play_duration_seconds: row.try_get("play_duration_seconds")?,
             })
@@ -474,15 +475,15 @@ impl CatalogRepository for SqliteCatalogRepository {
         } else {
             None
         };
-        let monthly_playback = if playback_available {
-            self.monthly_movie_playback(tmdb_id).await?
+        let daily_playback = if playback_available {
+            self.daily_movie_playback(tmdb_id).await?
         } else {
             Vec::new()
         };
 
         Ok(Some(MovieDetailsSources {
             instances,
-            monthly_playback,
+            daily_playback,
             playback_available,
             playback,
         }))
