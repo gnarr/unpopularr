@@ -2,6 +2,16 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [0.6.0](https://github.com/gnarr/unpopularr/compare/537adfb05373f38ac36636823ce76ce9c98b5a58..0.6.0) - 2026-07-11
+#### Features
+- (**movie**) add playback chart resolution toggle - ([4aa54a6](https://github.com/gnarr/unpopularr/commit/4aa54a643bad68fc9c5efd93bb5c0d97135f374f)) - Gunnar Cortes
+- add playback visualizations - ([537adfb](https://github.com/gnarr/unpopularr/commit/537adfb05373f38ac36636823ce76ce9c98b5a58)) - Gunnar Cortes
+#### Bug Fixes
+- show zero-duration episode plays - ([26e570a](https://github.com/gnarr/unpopularr/commit/26e570a5f23711801bc05ca5dc7d6f4c8ec6efe6)) - Gunnar Cortes
+- correct playback visualization edge cases - ([5c630bf](https://github.com/gnarr/unpopularr/commit/5c630bf9518305a2d9da2c3cb71ba6e4aab6c035)) - Gunnar Cortes
+
+- - -
+
 ## [0.5.0](https://github.com/gnarr/unpopularr/compare/b987e03da3ff7c3683fa08c205a25def44548a99..0.5.0) - 2026-07-10
 #### Features
 - (**catalog**) add movie and artist details - ([b987e03](https://github.com/gnarr/unpopularr/commit/b987e03da3ff7c3683fa08c205a25def44548a99)) - Gunnar Cortes
