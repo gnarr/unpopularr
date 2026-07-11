@@ -62,6 +62,9 @@ export function buildEpisodeStrip(
       season.episodes.map((episode) => episode.playback?.playDurationSeconds ?? 0),
     ),
   )
+  const hasWatchData = released.some((season) =>
+    season.episodes.some((episode) => (episode.playback?.playCount ?? 0) > 0),
+  )
   const seasonBars = released
     .filter((season) => season.episodes.length > 0)
     .map((season) => ({
@@ -78,5 +81,5 @@ export function buildEpisodeStrip(
       }),
     }))
 
-  return { seasons: seasonBars, hasWatchData: maxSeconds > 0 }
+  return { seasons: seasonBars, hasWatchData }
 }
