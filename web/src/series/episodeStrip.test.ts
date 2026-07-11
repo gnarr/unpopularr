@@ -98,6 +98,16 @@ describe('buildEpisodeStrip', () => {
     expect(strip.hasWatchData).toBe(false)
     expect(strip.seasons[0].bars[0].heightPercent).toBe(0)
   })
+
+  it('reports watch data for plays whose duration is unavailable', () => {
+    const strip = buildEpisodeStrip(
+      [season(1, [episode({ playback: watched(0, '2026-06-20T00:00:00Z') })])],
+      NOW,
+    )
+
+    expect(strip.hasWatchData).toBe(true)
+    expect(strip.seasons[0].bars[0].heightPercent).toBe(0)
+  })
 })
 
 describe('episodeBarClass', () => {
