@@ -45,15 +45,16 @@ impl PlaybackMetrics {
     }
 }
 
-/// Read-time playback aggregate for one calendar month of a movie, computed from
-/// `playback_events` grouped by month. Drives the movie details
-/// minutes-per-month plot. Only months that had playback are present; the
-/// frontend fills the gaps to a continuous axis.
+/// Read-time playback aggregate for one calendar day of a movie, computed from
+/// `playback_events` grouped by day. This is the finest grain the movie plot
+/// offers; the frontend re-buckets it to the resolution the user picks
+/// (day/week/month/year). Only days that had playback are present; the frontend
+/// fills the gaps to a continuous axis.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct MonthlyPlayback {
-    /// Calendar month as `YYYY-MM` in UTC.
-    pub month: String,
+pub struct DailyPlayback {
+    /// Calendar day as `YYYY-MM-DD` in UTC.
+    pub date: String,
     pub play_count: i64,
     pub play_duration_seconds: i64,
 }
@@ -144,9 +145,9 @@ pub struct SeriesDetailsSources {
 #[derive(Clone, Debug, Default)]
 pub struct MovieDetailsSources {
     pub instances: Vec<MovieSource>,
-    /// Per-month playback totals, ascending by month. Empty when playback is
+    /// Per-day playback totals, ascending by day. Empty when playback is
     /// unavailable or the movie has never been played.
-    pub monthly_playback: Vec<MonthlyPlayback>,
+    pub daily_playback: Vec<DailyPlayback>,
     pub playback_available: bool,
     pub playback: Option<PlaybackMetrics>,
 }
@@ -251,8 +252,8 @@ pub struct MovieDetails {
     /// Earliest Radarr "added" date across instances — the plot's left edge.
     /// `None` until a re-sync populates it.
     pub available_at: Option<DateTime<Utc>>,
-    /// Per-month playback totals, ascending by month.
-    pub monthly_playback: Vec<MonthlyPlayback>,
+    /// Per-day playback totals, ascending by day.
+    pub daily_playback: Vec<DailyPlayback>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -664,7 +665,7 @@ pub fn aggregate_movie(mut sources: MovieDetailsSources) -> Option<MovieDetails>
         instance_details,
         playback: playback_metrics(sources.playback_available, sources.playback.as_ref()),
         available_at,
-        monthly_playback: sources.monthly_playback,
+        daily_playback: sources.daily_playback,
     })
 }
 
@@ -787,7 +788,7 @@ mod tests {
 
     use super::{
         ArtistAlbumFile, ArtistDetailsSources, ArtistSource, CatalogPlayback, CatalogSources,
-        ContentItem, InstanceReference, MonthlyPlayback, MovieDetailsSources, MovieSource,
+        ContentItem, DailyPlayback, InstanceReference, MovieDetailsSources, MovieSource,
         PlaybackMetrics, SeriesDetailsSources, SeriesEpisodeFile, SeriesEpisodePlayback,
         SeriesSeasonDetail, SeriesSeasonFiles, SeriesSource, aggregate, aggregate_artist,
         aggregate_movie, aggregate_series,
@@ -1359,7 +1360,7 @@ mod tests {
     }
 
     #[test]
-    fn movie_details_takes_earliest_availability_and_passes_monthly_playback() {
+    fn movie_details_takes_earliest_availability_and_passes_daily_playback() {
         let early = chrono::DateTime::from_timestamp(1_000, 0);
         let late = chrono::DateTime::from_timestamp(2_000, 0);
         let with_availability = |available_at, config_order| {
@@ -1375,14 +1376,14 @@ mod tests {
                 with_availability(early, 1),
                 with_availability(None, 2),
             ],
-            monthly_playback: vec![
-                MonthlyPlayback {
-                    month: "2024-01".to_owned(),
+            daily_playback: vec![
+                DailyPlayback {
+                    date: "2024-01-10".to_owned(),
                     play_count: 2,
                     play_duration_seconds: 3_600,
                 },
-                MonthlyPlayback {
-                    month: "2024-03".to_owned(),
+                DailyPlayback {
+                    date: "2024-03-05".to_owned(),
                     play_count: 1,
                     play_duration_seconds: 1_800,
                 },
@@ -1393,9 +1394,9 @@ mod tests {
         .expect("movie details");
 
         assert_eq!(details.available_at, early);
-        assert_eq!(details.monthly_playback.len(), 2);
-        assert_eq!(details.monthly_playback[0].month, "2024-01");
-        assert_eq!(details.monthly_playback[1].play_duration_seconds, 1_800);
+        assert_eq!(details.daily_playback.len(), 2);
+        assert_eq!(details.daily_playback[0].date, "2024-01-10");
+        assert_eq!(details.daily_playback[1].play_duration_seconds, 1_800);
     }
 
     fn artist_source(
