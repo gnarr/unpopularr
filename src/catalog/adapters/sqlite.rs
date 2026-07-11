@@ -75,8 +75,16 @@ impl SqliteCatalogRepository {
             SELECT substr(played_at, 1, 10) AS date,
                    COUNT(*) AS play_count,
                    COALESCE(SUM(duration_seconds), 0) AS play_duration_seconds
-            FROM playback_events
-            WHERE content_type = 'movie' AND content_id = ?1
+            FROM playback_events AS events
+            LEFT JOIN playback_legacy_snapshots AS legacy
+                ON legacy.source_id = events.source_id
+               AND legacy.content_type = events.content_type
+               AND legacy.content_id = events.content_id
+            WHERE events.content_type = 'movie' AND events.content_id = ?1
+              AND (
+                  legacy.source_id IS NULL
+                  OR events.played_at > legacy.covered_until
+              )
             GROUP BY date
             ORDER BY date
             "#,
@@ -590,4 +598,56 @@ fn instance_reference_with_id(
         name: row.try_get("instance_name")?,
         last_successful_sync_at,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database;
+
+    #[tokio::test]
+    async fn daily_movie_playback_excludes_events_covered_by_legacy_snapshot() {
+        let pool = database::test_pool().await;
+        let repository = SqliteCatalogRepository::new(pool.clone());
+
+        sqlx::query("INSERT INTO playback_sources (id, provider) VALUES ('plex', 'tautulli')")
+            .execute(&pool)
+            .await
+            .expect("seed playback source");
+        sqlx::query(
+            r#"
+            INSERT INTO playback_legacy_snapshots (
+                source_id, content_type, content_id, play_count,
+                play_duration_seconds, covered_until
+            )
+            VALUES ('plex', 'movie', '42', 1, 60, '2024-01-15T00:00:00Z')
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("seed legacy snapshot");
+        sqlx::query(
+            r#"
+            INSERT INTO playback_events (
+                source_id, source_row_id, content_type, content_id,
+                played_at, duration_seconds
+            )
+            VALUES ('plex', 1, 'movie', '42', '2024-01-10T00:00:00Z', 60),
+                   ('plex', 2, 'movie', '42', '2024-01-20T00:00:00Z', 120)
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("seed playback events");
+
+        let daily = repository
+            .daily_movie_playback(42)
+            .await
+            .expect("load daily playback");
+
+        assert_eq!(daily.len(), 1);
+        assert_eq!(daily[0].date, "2024-01-20");
+        assert_eq!(daily[0].play_count, 1);
+        assert_eq!(daily[0].play_duration_seconds, 120);
+    }
 }

@@ -103,7 +103,7 @@ export function buildMoviePlaybackChart(
     playCount: entry.count,
     heightPercent: maxSeconds > 0 ? (entry.seconds / maxSeconds) * 100 : 0,
     tooltip:
-      entry.seconds > 0
+      entry.count > 0
         ? `${entry.label} · ${formatDuration(entry.seconds)} · ${entry.count} ${entry.count === 1 ? 'play' : 'plays'}`
         : `${entry.label} · no plays`,
   }))
