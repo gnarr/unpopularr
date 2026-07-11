@@ -744,6 +744,12 @@ mod tests {
         assert_eq!(details["unattributedPlayCount"], 8);
     }
 
+    fn utc(iso: &str) -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::parse_from_rfc3339(iso)
+            .expect("valid RFC3339")
+            .with_timezone(&chrono::Utc)
+    }
+
     async fn get_json(app: &axum::Router, uri: &str) -> (StatusCode, Value) {
         let response = app
             .clone()
@@ -861,6 +867,73 @@ mod tests {
         let (_, details) = get_json(&app, "/api/v1/movies/42").await;
         assert_eq!(details["playback"]["playCount"], 4);
         assert_eq!(details["playback"]["playDurationSeconds"], 7200);
+    }
+
+    #[tokio::test]
+    async fn movie_details_reports_availability_and_monthly_playback() {
+        let (app, pool) = minimal_app_with_pool().await;
+        insert_instances(&pool, "radarr").await;
+        // Same movie on two instances added on different dates; the earliest
+        // (instance 'b', despite its higher config_order) is the plot's edge.
+        sqlx::query(
+            r#"
+            INSERT INTO movie_snapshots
+                (instance_id, tmdb_id, title, year, size_on_disk_bytes, file_count, added_at)
+            VALUES ('a', 42, 'Movie', 2020, 100, 1, ?1), ('b', 42, 'Movie', 2020, 400, 1, ?2)
+            "#,
+        )
+        .bind(utc("2023-06-01T00:00:00Z"))
+        .bind(utc("2023-05-01T00:00:00Z"))
+        .execute(&pool)
+        .await
+        .expect("insert movies");
+
+        // A playback source makes playback available; events span two months
+        // (two sessions in January, one in March) to prove the month buckets.
+        insert_playback_snapshot(&pool, "movie", "42", 3, 2100).await;
+        for (row_id, played_at, duration) in [
+            (1_i64, "2024-01-10T00:00:00Z", 600_i64),
+            (2, "2024-01-20T00:00:00Z", 300),
+            (3, "2024-03-05T00:00:00Z", 1200),
+        ] {
+            sqlx::query(
+                r#"
+                INSERT INTO playback_events (
+                    source_id, source_row_id, content_type, content_id,
+                    played_at, duration_seconds
+                )
+                VALUES ('plex', ?1, 'movie', '42', ?2, ?3)
+                "#,
+            )
+            .bind(row_id)
+            .bind(utc(played_at))
+            .bind(duration)
+            .execute(&pool)
+            .await
+            .expect("insert playback event");
+        }
+
+        let (status, details) = get_json(&app, "/api/v1/movies/42").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(details["availableAt"], "2023-05-01T00:00:00Z");
+        let monthly = details["monthlyPlayback"].as_array().expect("monthly");
+        assert_eq!(monthly.len(), 2);
+        assert_eq!(
+            monthly[0],
+            serde_json::json!({
+                "month": "2024-01",
+                "playCount": 2,
+                "playDurationSeconds": 900,
+            })
+        );
+        assert_eq!(
+            monthly[1],
+            serde_json::json!({
+                "month": "2024-03",
+                "playCount": 1,
+                "playDurationSeconds": 1200,
+            })
+        );
     }
 
     #[tokio::test]

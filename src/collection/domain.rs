@@ -27,6 +27,9 @@ pub struct MovieSnapshot {
     pub year: i64,
     pub size_on_disk_bytes: i64,
     pub file_count: i64,
+    /// When Radarr first added the movie to its library. `None` when Radarr
+    /// omits the field; drives the movie details playback-by-month plot.
+    pub added_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Clone, Debug)]

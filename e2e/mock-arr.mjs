@@ -34,6 +34,9 @@ const movies = [
     tmdbId: 550,
     title: 'Mock Movie',
     year: 1999,
+    // Added long before the single Tautulli play, so the per-month plot spans
+    // an availability window with one busy month and the rest empty.
+    added: '2025-01-10T00:00:00Z',
     hasFile: true,
     sizeOnDisk: 2500,
     statistics: { movieFileCount: 1, sizeOnDisk: 2500 },

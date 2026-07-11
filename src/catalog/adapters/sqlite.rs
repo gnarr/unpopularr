@@ -7,9 +7,9 @@ use sqlx::{Row, SqlitePool};
 
 use crate::catalog::{
     ArtistAlbumFile, ArtistDetailsSources, ArtistSource, CatalogPlayback, CatalogRepository,
-    CatalogSources, InstanceReference, MovieDetailsSources, MovieSource, PlaybackMetrics,
-    SeriesDetailsSources, SeriesEpisodeFile, SeriesEpisodePlayback, SeriesSeasonFiles,
-    SeriesSource,
+    CatalogSources, InstanceReference, MonthlyPlayback, MovieDetailsSources, MovieSource,
+    PlaybackMetrics, SeriesDetailsSources, SeriesEpisodeFile, SeriesEpisodePlayback,
+    SeriesSeasonFiles, SeriesSource,
 };
 
 #[derive(Clone)]
@@ -62,6 +62,36 @@ impl SqliteCatalogRepository {
             })
         })
         .transpose()
+    }
+
+    /// Per-calendar-month playback totals for one movie, ascending by month.
+    /// `substr(played_at, 1, 7)` takes the `YYYY-MM` prefix of the stored UTC
+    /// RFC3339 timestamp — the events are always UTC, so this is the UTC month.
+    /// Only months that had playback appear; the frontend fills the gaps.
+    async fn monthly_movie_playback(&self, tmdb_id: i64) -> Result<Vec<MonthlyPlayback>> {
+        sqlx::query(
+            r#"
+            SELECT substr(played_at, 1, 7) AS month,
+                   COUNT(*) AS play_count,
+                   COALESCE(SUM(duration_seconds), 0) AS play_duration_seconds
+            FROM playback_events
+            WHERE content_type = 'movie' AND content_id = ?1
+            GROUP BY month
+            ORDER BY month
+            "#,
+        )
+        .bind(tmdb_id.to_string())
+        .fetch_all(&self.pool)
+        .await?
+        .into_iter()
+        .map(|row| {
+            Ok(MonthlyPlayback {
+                month: row.try_get("month")?,
+                play_count: row.try_get("play_count")?,
+                play_duration_seconds: row.try_get("play_duration_seconds")?,
+            })
+        })
+        .collect()
     }
 }
 
@@ -126,6 +156,9 @@ impl CatalogRepository for SqliteCatalogRepository {
                     year: row.try_get("year")?,
                     size_on_disk_bytes: row.try_get("size_on_disk_bytes")?,
                     file_count: row.try_get("file_count")?,
+                    // Availability drives the details plot only; the list query
+                    // doesn't fetch it.
+                    available_at: None,
                     instance: instance_reference(&row)?,
                     config_order: row.try_get("config_order")?,
                 })
@@ -402,7 +435,7 @@ impl CatalogRepository for SqliteCatalogRepository {
     async fn load_movie(&self, tmdb_id: i64) -> Result<Option<MovieDetailsSources>> {
         let movie_rows = sqlx::query(
             r#"
-            SELECT m.title, m.year, m.size_on_disk_bytes, m.file_count,
+            SELECT m.title, m.year, m.size_on_disk_bytes, m.file_count, m.added_at,
                    i.id AS instance_id, i.name AS instance_name, i.config_order,
                    i.last_successful_sync_at
             FROM movie_snapshots m
@@ -427,6 +460,7 @@ impl CatalogRepository for SqliteCatalogRepository {
                     year: row.try_get("year")?,
                     size_on_disk_bytes: row.try_get("size_on_disk_bytes")?,
                     file_count: row.try_get("file_count")?,
+                    available_at: row.try_get("added_at")?,
                     instance: instance_reference(&row)?,
                     config_order: row.try_get("config_order")?,
                 })
@@ -440,9 +474,15 @@ impl CatalogRepository for SqliteCatalogRepository {
         } else {
             None
         };
+        let monthly_playback = if playback_available {
+            self.monthly_movie_playback(tmdb_id).await?
+        } else {
+            Vec::new()
+        };
 
         Ok(Some(MovieDetailsSources {
             instances,
+            monthly_playback,
             playback_available,
             playback,
         }))

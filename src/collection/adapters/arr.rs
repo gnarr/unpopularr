@@ -71,6 +71,7 @@ impl ArrClient {
                                 }
                             },
                         )),
+                        added_at: movie.added,
                     }
                 })
                 .collect(),
@@ -295,6 +296,9 @@ struct RadarrMovie {
     year: i64,
     size_on_disk: Option<i64>,
     has_file: Option<bool>,
+    /// When the movie was added to Radarr's library. Radarr always sends this
+    /// for library movies, but treat it as optional to tolerate older APIs.
+    added: Option<DateTime<Utc>>,
     statistics: Option<RadarrStatistics>,
 }
 
@@ -426,6 +430,7 @@ mod tests {
                     "tmdbId": 42,
                     "title": "Movie",
                     "year": 2024,
+                    "added": "2024-03-15T10:00:00Z",
                     "statistics": {"movieFileCount": 2, "sizeOnDisk": 1234}
                 }])),
             )
@@ -444,6 +449,10 @@ mod tests {
         assert_eq!(movies[0].tmdb_id, 42);
         assert_eq!(movies[0].file_count, 2);
         assert_eq!(movies[0].size_on_disk_bytes, 1234);
+        assert_eq!(
+            movies[0].added_at.map(|added| added.to_rfc3339()),
+            Some("2024-03-15T10:00:00+00:00".to_owned())
+        );
     }
 
     #[tokio::test]
