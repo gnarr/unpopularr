@@ -14,6 +14,7 @@ use tracing::error;
 use crate::{
     catalog::CatalogService,
     collection::{StartSync, SyncService, SyncTrigger},
+    instances::{Instance, InstanceKind},
     playback::{PlaybackService, PlaybackSyncTrigger, StartPlaybackSync},
     web_assets::spa_fallback,
 };
@@ -23,12 +24,15 @@ pub struct AppState {
     pub catalog: CatalogService,
     pub sync: SyncService,
     pub playback: Option<PlaybackService>,
+    /// Configured instances, used to serve browser-facing deep-link URLs.
+    pub instances: Arc<Vec<Instance>>,
 }
 
 pub fn router(state: AppState) -> Router {
     let playback_enabled = state.playback.is_some();
     let api = Router::new()
         .route("/v1/content", get(all_content))
+        .route("/v1/instances", get(instances))
         .route("/v1/series/{tvdb_id}", get(series_details))
         .route("/v1/movies/{tmdb_id}", get(movie_details))
         .route("/v1/artists/{musicbrainz_id}", get(artist_details))
@@ -65,6 +69,30 @@ async fn all_content(State(state): State<Arc<AppState>>) -> Response {
         Ok(content) => Json(content).into_response(),
         Err(error) => internal_error(error),
     }
+}
+
+/// Browser-facing metadata for one configured instance. The frontend joins
+/// `external_url` with a per-item path to build deep links into the *arr web
+/// UI. Deliberately excludes the API key.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InstanceLink {
+    id: String,
+    kind: InstanceKind,
+    external_url: String,
+}
+
+async fn instances(State(state): State<Arc<AppState>>) -> Response {
+    let links: Vec<InstanceLink> = state
+        .instances
+        .iter()
+        .map(|instance| InstanceLink {
+            id: instance.id.clone(),
+            kind: instance.kind,
+            external_url: instance.web_url().to_string(),
+        })
+        .collect();
+    Json(links).into_response()
 }
 
 async fn series_details(State(state): State<Arc<AppState>>, Path(tvdb_id): Path<i64>) -> Response {
@@ -223,6 +251,7 @@ mod tests {
             name: "Radarr".to_owned(),
             kind: InstanceKind::Radarr,
             base_url: Url::parse(&format!("{}/", server.uri())).expect("URL"),
+            external_url: None,
             api_key: "secret".to_owned(),
             config_order: 0,
         };
@@ -243,6 +272,7 @@ mod tests {
                 Arc::new(vec![instance]),
             ),
             playback: None,
+            instances: Arc::new(Vec::new()),
         });
 
         let no_sync = application
@@ -384,6 +414,7 @@ mod tests {
                 Arc::new(Vec::new()),
             ),
             playback: None,
+            instances: Arc::new(Vec::new()),
         });
         let response = disabled
             .oneshot(
@@ -437,6 +468,7 @@ mod tests {
                 Arc::new(TautulliClient::new().expect("Tautulli client")),
                 source,
             )),
+            instances: Arc::new(Vec::new()),
         });
 
         let no_sync = enabled
@@ -521,6 +553,7 @@ mod tests {
                 Arc::new(Vec::new()),
             ),
             playback: None,
+            instances: Arc::new(Vec::new()),
         });
         (app, pool)
     }
@@ -581,6 +614,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn instances_endpoint_returns_deep_link_metadata_without_keys() {
+        let pool = database::test_pool().await;
+        let collection_port: Arc<dyn CollectionRepository> =
+            Arc::new(SqliteCollectionRepository::new(pool.clone()));
+        let catalog_port: Arc<dyn CatalogRepository> = Arc::new(SqliteCatalogRepository::new(pool));
+        let instances = Arc::new(vec![
+            Instance {
+                id: "sonarr".to_owned(),
+                name: "Sonarr".to_owned(),
+                kind: InstanceKind::Sonarr,
+                base_url: Url::parse("http://sonarr:8989/").expect("URL"),
+                external_url: Some(Url::parse("https://sonarr.example.com/").expect("URL")),
+                api_key: "super-secret-key".to_owned(),
+                config_order: 0,
+            },
+            Instance {
+                id: "radarr".to_owned(),
+                name: "Radarr".to_owned(),
+                kind: InstanceKind::Radarr,
+                base_url: Url::parse("http://radarr:7878/").expect("URL"),
+                external_url: None,
+                api_key: "another-secret".to_owned(),
+                config_order: 1,
+            },
+        ]);
+        let app = router(AppState {
+            catalog: CatalogService::new(catalog_port),
+            sync: SyncService::new(
+                collection_port,
+                ArrClient::new().expect("Arr client"),
+                Arc::clone(&instances),
+            ),
+            playback: None,
+            instances,
+        });
+
+        let (status, body) = get_json(&app, "/api/v1/instances").await;
+        assert_eq!(status, StatusCode::OK);
+        let list = body.as_array().expect("instances array");
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0]["id"], "sonarr");
+        assert_eq!(list[0]["kind"], "sonarr");
+        // A configured external_url wins over the internal API base_url.
+        assert_eq!(list[0]["externalUrl"], "https://sonarr.example.com/");
+        // Falls back to base_url when external_url is absent.
+        assert_eq!(list[1]["externalUrl"], "http://radarr:7878/");
+        // API keys must never leak into the browser-facing payload.
+        let raw = serde_json::to_string(&body).expect("serialize");
+        assert!(!raw.contains("super-secret-key"));
+        assert!(!raw.contains("another-secret"));
+        assert!(!raw.contains("apiKey"));
+    }
+
+    #[tokio::test]
     async fn series_details_returns_json_not_found_for_unknown_tvdb() {
         let response = minimal_app()
             .await
@@ -610,8 +697,9 @@ mod tests {
         sqlx::query(
             r#"
             INSERT INTO series_snapshots
-                (instance_id, tvdb_id, title, year, size_on_disk_bytes, file_count)
-            VALUES ('a', 55, 'Show', 2020, 100, 3), ('b', 55, 'Other', 2021, 200, 2)
+                (instance_id, tvdb_id, title, title_slug, year, size_on_disk_bytes, file_count)
+            VALUES ('a', 55, 'Show', 'show', 2020, 100, 3),
+                   ('b', 55, 'Other', 'other', 2021, 200, 2)
             "#,
         )
         .execute(&pool)
@@ -661,6 +749,7 @@ mod tests {
             .expect("response body");
         let details: Value = serde_json::from_slice(&body).expect("series JSON");
         assert_eq!(details["displayName"], "Show"); // lowest config_order wins
+        assert_eq!(details["titleSlug"], "show"); // slug follows the same winner
         assert_eq!(details["sizeOnDiskBytes"], 300);
         assert_eq!(details["fileCount"], 5);
         assert_eq!(details["instances"].as_array().expect("instances").len(), 2);

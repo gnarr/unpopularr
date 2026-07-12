@@ -42,6 +42,9 @@ export interface MovieItem extends ContentBase {
 export interface SeriesItem extends ContentBase {
   contentType: 'series'
   tvdbId: number
+  // Sonarr's URL slug, used to build web-UI deep links. '' for series synced
+  // before the slug was captured; the next sync fills it.
+  titleSlug: string
   year: number
   seasonsWithFiles: number
 }
@@ -89,6 +92,9 @@ export interface SeriesInstanceDetail {
 export interface SeriesDetails {
   displayName: string
   tvdbId: number
+  // Sonarr's URL slug, used to build web-UI deep links. '' until a sync
+  // captures it (see SeriesItem.titleSlug).
+  titleSlug: string
   year: number
   sizeOnDiskBytes: number
   fileCount: number
@@ -152,6 +158,16 @@ export interface ArtistDetails {
   albums: ArtistAlbumDetail[]
   instanceDetails: ArtistInstanceDetail[]
   playback: PlaybackMetrics | null
+}
+
+// Browser-facing instance metadata (GET /api/v1/instances). `externalUrl` is
+// the configured external_url or, when unset, the API base_url — always with a
+// trailing slash so it can be a base for URL joins. Deliberately excludes the
+// API key.
+export interface InstanceLink {
+  id: string
+  kind: InstanceKind
+  externalUrl: string
 }
 
 export type SyncTrigger = 'startup' | 'scheduled' | 'manual'

@@ -78,6 +78,7 @@ pub struct MovieSource {
 pub struct SeriesSource {
     pub tvdb_id: i64,
     pub title: String,
+    pub title_slug: String,
     pub year: i64,
     pub size_on_disk_bytes: i64,
     pub file_count: i64,
@@ -215,6 +216,7 @@ pub struct SeriesInstanceDetail {
 pub struct SeriesDetails {
     pub display_name: String,
     pub tvdb_id: i64,
+    pub title_slug: String,
     pub year: i64,
     pub size_on_disk_bytes: i64,
     pub file_count: i64,
@@ -314,6 +316,7 @@ pub enum ContentItem {
         file_count: i64,
         instances: Vec<InstanceReference>,
         tvdb_id: i64,
+        title_slug: String,
         year: i64,
         seasons_with_files: i64,
         playback: Option<PlaybackMetrics>,
@@ -387,6 +390,7 @@ pub fn aggregate(mut sources: CatalogSources) -> Vec<ContentItem> {
             .entry(source.tvdb_id)
             .or_insert_with(|| SeriesAggregate {
                 title: source.title,
+                title_slug: source.title_slug,
                 year: source.year,
                 size_on_disk_bytes: 0,
                 file_count: 0,
@@ -441,6 +445,7 @@ pub fn aggregate(mut sources: CatalogSources) -> Vec<ContentItem> {
             file_count: series.file_count,
             instances: series.instances,
             tvdb_id,
+            title_slug: series.title_slug,
             year: series.year,
             seasons_with_files: i64::try_from(series.season_numbers.len()).unwrap_or(i64::MAX),
             playback: playback_metrics(playback.available, playback.series.get(&tvdb_id)),
@@ -481,6 +486,7 @@ pub fn aggregate_series(mut sources: SeriesDetailsSources) -> Option<SeriesDetai
     let first = sources.instances.first()?;
     let tvdb_id = first.tvdb_id;
     let display_name = first.title.clone();
+    let title_slug = first.title_slug.clone();
     let year = first.year;
 
     let mut size_on_disk_bytes = 0;
@@ -606,6 +612,7 @@ pub fn aggregate_series(mut sources: SeriesDetailsSources) -> Option<SeriesDetai
     Some(SeriesDetails {
         display_name,
         tvdb_id,
+        title_slug,
         year,
         size_on_disk_bytes,
         file_count,
@@ -765,6 +772,7 @@ struct MovieAggregate {
 
 struct SeriesAggregate {
     title: String,
+    title_slug: String,
     year: i64,
     size_on_disk_bytes: i64,
     file_count: i64,
@@ -864,6 +872,7 @@ mod tests {
                 SeriesSource {
                     tvdb_id: 1,
                     title: "Show".to_owned(),
+                    title_slug: "show".to_owned(),
                     year: 2020,
                     size_on_disk_bytes: 100,
                     file_count: 2,
@@ -874,6 +883,7 @@ mod tests {
                 SeriesSource {
                     tvdb_id: 1,
                     title: "Show".to_owned(),
+                    title_slug: "show".to_owned(),
                     year: 2020,
                     size_on_disk_bytes: 200,
                     file_count: 2,
@@ -995,6 +1005,7 @@ mod tests {
         SeriesSource {
             tvdb_id: 1,
             title: title.to_owned(),
+            title_slug: title.to_lowercase(),
             year: 2020,
             size_on_disk_bytes,
             file_count,
@@ -1035,6 +1046,7 @@ mod tests {
         .expect("series details");
 
         assert_eq!(details.display_name, "Show"); // lowest config_order wins
+        assert_eq!(details.title_slug, "show"); // slug follows the same winner
         assert_eq!(details.size_on_disk_bytes, 300);
         assert_eq!(details.file_count, 5);
         assert_eq!(details.instances.len(), 2);

@@ -199,14 +199,16 @@ impl CollectionRepository for SqliteCollectionRepository {
                     sqlx::query(
                         r#"
                         INSERT INTO series_snapshots (
-                            instance_id, tvdb_id, title, year, size_on_disk_bytes, file_count
+                            instance_id, tvdb_id, title, title_slug, year,
+                            size_on_disk_bytes, file_count
                         )
-                        VALUES (?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
                         "#,
                     )
                     .bind(&instance.id)
                     .bind(series.tvdb_id)
                     .bind(&series.title)
+                    .bind(&series.title_slug)
                     .bind(series.year)
                     .bind(series.size_on_disk_bytes)
                     .bind(series.file_count)
@@ -542,6 +544,7 @@ mod tests {
             name: id.to_owned(),
             kind,
             base_url: Url::parse("http://localhost/").expect("URL"),
+            external_url: None,
             api_key: "secret".to_owned(),
             config_order: 0,
         }
@@ -551,6 +554,7 @@ mod tests {
         Snapshot::Series(vec![SeriesSnapshot {
             tvdb_id: 7,
             title: "Series".to_owned(),
+            title_slug: "series".to_owned(),
             year: 2020,
             size_on_disk_bytes: 512,
             file_count: 1,

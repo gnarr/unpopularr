@@ -29,6 +29,7 @@ const series: SeriesItem = {
   instances: [],
   playback: null,
   tvdbId: 79126,
+  titleSlug: 'the-wire',
   year: 2002,
   seasonsWithFiles: 5,
 }

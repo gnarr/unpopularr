@@ -2,6 +2,7 @@ import { ApiError, request } from './http'
 import type {
   ArtistDetails,
   ContentItem,
+  InstanceLink,
   MovieDetails,
   PlaybackSyncRun,
   SeriesDetails,
@@ -13,6 +14,11 @@ export type PlaybackSyncState = PlaybackSyncRun | null | typeof PLAYBACK_NOT_CON
 
 export function getContent(): Promise<ContentItem[]> {
   return request<ContentItem[]>('/api/v1/content').then((data) => data ?? [])
+}
+
+// Browser-facing deep-link metadata for every configured instance.
+export function getInstances(): Promise<InstanceLink[]> {
+  return request<InstanceLink[]>('/api/v1/instances').then((data) => data ?? [])
 }
 
 // A missing item 404s; unlike playback that ApiError is surfaced so the detail

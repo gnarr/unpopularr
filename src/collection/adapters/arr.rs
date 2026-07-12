@@ -135,6 +135,7 @@ impl ArrClient {
                     SeriesSnapshot {
                         tvdb_id: series.tvdb_id,
                         title: series.title,
+                        title_slug: series.title_slug,
                         year: series.year,
                         size_on_disk_bytes: non_negative(statistics.size_on_disk.unwrap_or(0)),
                         file_count: non_negative(statistics.episode_file_count.unwrap_or(0)),
@@ -316,6 +317,10 @@ struct SonarrSeries {
     id: i64,
     tvdb_id: i64,
     title: String,
+    /// Slug Sonarr's web UI routes on (`/series/{titleSlug}`). Defaulted so a
+    /// rare older API response without it degrades to a hidden deep link.
+    #[serde(default)]
+    title_slug: String,
     #[serde(default)]
     year: i64,
     #[serde(default)]
@@ -413,6 +418,7 @@ mod tests {
             name: "Test".to_owned(),
             kind,
             base_url: Url::parse(&format!("{}{path}/", server.uri())).expect("base URL"),
+            external_url: None,
             api_key: "secret".to_owned(),
             config_order: 0,
         }
@@ -466,6 +472,7 @@ mod tests {
                     "id": 9,
                     "tvdbId": 7,
                     "title": "Series",
+                    "titleSlug": "series-slug",
                     "year": 2020,
                     "statistics": {"episodeFileCount": 4, "sizeOnDisk": 800},
                     "seasons": [
@@ -524,6 +531,7 @@ mod tests {
         let Snapshot::Series(series) = snapshot else {
             panic!("expected series");
         };
+        assert_eq!(series[0].title_slug, "series-slug");
         assert_eq!(series[0].seasons.len(), 1);
         assert_eq!(series[0].seasons[0].season_number, 1);
 
