@@ -33,8 +33,22 @@ pub struct Instance {
     pub name: String,
     pub kind: InstanceKind,
     pub base_url: Url,
+    /// Browser-facing URL for deep links into this service's web UI. `None`
+    /// when unset in config, in which case [`Self::base_url`] is used. Distinct
+    /// from `base_url` because the API address is often internal (e.g. a Docker
+    /// service name) and unreachable from a user's browser.
+    pub external_url: Option<Url>,
     pub api_key: String,
     pub config_order: i64,
+}
+
+impl Instance {
+    /// The URL a browser should use to reach this service, preferring the
+    /// configured `external_url` and falling back to the API `base_url`.
+    #[must_use]
+    pub fn web_url(&self) -> &Url {
+        self.external_url.as_ref().unwrap_or(&self.base_url)
+    }
 }
 
 impl fmt::Debug for Instance {
@@ -45,6 +59,7 @@ impl fmt::Debug for Instance {
             .field("name", &self.name)
             .field("kind", &self.kind)
             .field("base_url", &self.base_url)
+            .field("external_url", &self.external_url)
             .field("api_key", &"[REDACTED]")
             .field("config_order", &self.config_order)
             .finish()

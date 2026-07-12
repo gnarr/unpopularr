@@ -36,6 +36,8 @@ pub struct MovieSnapshot {
 pub struct SeriesSnapshot {
     pub tvdb_id: i64,
     pub title: String,
+    /// Sonarr's URL slug for the series, used to build web-UI deep links.
+    pub title_slug: String,
     pub year: i64,
     pub size_on_disk_bytes: i64,
     pub file_count: i64,

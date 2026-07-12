@@ -83,6 +83,7 @@ async fn main() -> Result<()> {
         catalog: catalog_service,
         sync: sync_service,
         playback: playback_runtime.map(|(service, _, _)| service),
+        instances: Arc::clone(&instances),
     });
     let listener = TcpListener::bind(config.server.bind)
         .await

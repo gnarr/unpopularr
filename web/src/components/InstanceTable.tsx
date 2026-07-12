@@ -1,5 +1,8 @@
 import type { InstanceReference } from '../api/types'
+import { useInstanceMap } from '../api/queries'
+import { arrName, deepLinkHref, type LinkTarget } from '../lib/deepLink'
 import { formatBytes } from '../lib/format'
+import { ArrLinkIcon } from './ArrLinkIcon'
 
 export interface InstanceRow {
   instance: InstanceReference
@@ -10,8 +13,19 @@ export interface InstanceRow {
 }
 
 // The per-instance breakdown on detail pages. Single-instance setups skip it —
-// the breakdown would just repeat the header stats.
-export function InstanceTable({ rows, extraHeader }: { rows: InstanceRow[]; extraHeader?: string }) {
+// the breakdown would just repeat the header stats. `target` enables the
+// per-instance "open in the *arr web UI" deep link.
+export function InstanceTable({
+  rows,
+  extraHeader,
+  target,
+}: {
+  rows: InstanceRow[]
+  extraHeader?: string
+  target?: LinkTarget
+}) {
+  const instanceMap = useInstanceMap()
+
   if (rows.length <= 1) return null
 
   return (
@@ -30,10 +44,18 @@ export function InstanceTable({ rows, extraHeader }: { rows: InstanceRow[]; extr
             </tr>
           </thead>
           <tbody>
-            {rows.map((row) => (
+            {rows.map((row) => {
+              const link = instanceMap.get(row.instance.id)
+              const href = target && link ? deepLinkHref(link, target) : null
+              return (
               <tr key={row.instance.id} className="hover:bg-slate-800/30">
                 <td className="border-b border-slate-800/60 px-3 py-1.5 text-slate-200">
-                  {row.instance.name}
+                  <span className="inline-flex items-center gap-1.5">
+                    {row.instance.name}
+                    {href && link && (
+                      <ArrLinkIcon href={href} label={`Open in ${arrName(link.kind)}`} />
+                    )}
+                  </span>
                 </td>
                 <td className="border-b border-slate-800/60 px-3 py-1.5 text-right tabular-nums">
                   {formatBytes(row.sizeOnDiskBytes)}
@@ -47,7 +69,8 @@ export function InstanceTable({ rows, extraHeader }: { rows: InstanceRow[]; extr
                   </td>
                 )}
               </tr>
-            ))}
+              )
+            })}
           </tbody>
         </table>
       </div>

@@ -1,5 +1,6 @@
 export const queryKeys = {
   content: ['content'] as const,
+  instances: ['instances'] as const,
   // The `*All` keys are prefixes that invalidate every cached detail at once.
   seriesAll: ['series'] as const,
   series: (tvdbId: number) => ['series', tvdbId] as const,

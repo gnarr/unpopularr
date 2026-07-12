@@ -176,7 +176,8 @@ impl CatalogRepository for SqliteCatalogRepository {
 
         let series_rows = sqlx::query(
             r#"
-            SELECT s.tvdb_id, s.title, s.year, s.size_on_disk_bytes, s.file_count,
+            SELECT s.tvdb_id, s.title, s.title_slug, s.year, s.size_on_disk_bytes,
+                   s.file_count,
                    i.id AS instance_id, i.name AS instance_name, i.config_order,
                    i.last_successful_sync_at
             FROM series_snapshots s
@@ -194,6 +195,7 @@ impl CatalogRepository for SqliteCatalogRepository {
                 Ok(SeriesSource {
                     tvdb_id,
                     title: row.try_get("title")?,
+                    title_slug: row.try_get("title_slug")?,
                     year: row.try_get("year")?,
                     size_on_disk_bytes: row.try_get("size_on_disk_bytes")?,
                     file_count: row.try_get("file_count")?,
@@ -297,7 +299,8 @@ impl CatalogRepository for SqliteCatalogRepository {
     async fn load_series(&self, tvdb_id: i64) -> Result<Option<SeriesDetailsSources>> {
         let series_rows = sqlx::query(
             r#"
-            SELECT s.tvdb_id, s.title, s.year, s.size_on_disk_bytes, s.file_count,
+            SELECT s.tvdb_id, s.title, s.title_slug, s.year, s.size_on_disk_bytes,
+                   s.file_count,
                    i.id AS instance_id, i.name AS instance_name, i.config_order,
                    i.last_successful_sync_at
             FROM series_snapshots s
@@ -419,6 +422,7 @@ impl CatalogRepository for SqliteCatalogRepository {
                 Ok(SeriesSource {
                     tvdb_id: row.try_get("tvdb_id")?,
                     title: row.try_get("title")?,
+                    title_slug: row.try_get("title_slug")?,
                     year: row.try_get("year")?,
                     size_on_disk_bytes: row.try_get("size_on_disk_bytes")?,
                     file_count: row.try_get("file_count")?,

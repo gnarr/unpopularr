@@ -103,6 +103,8 @@ struct RawInstance {
     name: String,
     kind: InstanceKind,
     base_url: Url,
+    #[serde(default)]
+    external_url: Option<Url>,
     api_key_env: String,
 }
 
@@ -174,12 +176,6 @@ impl RawConfig {
             if !names.insert(raw.name.to_lowercase()) {
                 bail!("duplicate instance name: {}", raw.name);
             }
-            if !matches!(raw.base_url.scheme(), "http" | "https") {
-                bail!("instance {} base_url must use http or https", raw.id);
-            }
-            if raw.base_url.cannot_be_a_base() {
-                bail!("instance {} base_url cannot be used as a base URL", raw.id);
-            }
             if raw.api_key_env.trim().is_empty() {
                 bail!("instance {} api_key_env must not be empty", raw.id);
             }
@@ -198,17 +194,19 @@ impl RawConfig {
                 );
             }
 
-            let mut base_url = raw.base_url;
-            if !base_url.path().ends_with('/') {
-                let path = format!("{}/", base_url.path());
-                base_url.set_path(&path);
-            }
+            let base_url =
+                normalize_base_url(raw.base_url, &format!("instance {} base_url", raw.id))?;
+            let external_url = raw
+                .external_url
+                .map(|url| normalize_base_url(url, &format!("instance {} external_url", raw.id)))
+                .transpose()?;
 
             instances.push(Instance {
                 id: raw.id,
                 name: raw.name,
                 kind: raw.kind,
                 base_url,
+                external_url,
                 api_key,
                 config_order: i64::try_from(index).context("too many configured instances")?,
             });
@@ -242,12 +240,6 @@ fn validate_playback(
     if raw.interval_seconds == 0 {
         bail!("playback.interval_seconds must be greater than zero");
     }
-    if !matches!(raw.base_url.scheme(), "http" | "https") {
-        bail!("playback.base_url must use http or https");
-    }
-    if raw.base_url.cannot_be_a_base() {
-        bail!("playback.base_url cannot be used as a base URL");
-    }
     if raw.api_key_env.trim().is_empty() {
         bail!("playback.api_key_env must not be empty");
     }
@@ -266,11 +258,7 @@ fn validate_playback(
         );
     }
 
-    let mut base_url = raw.base_url;
-    if !base_url.path().ends_with('/') {
-        let path = format!("{}/", base_url.path());
-        base_url.set_path(&path);
-    }
+    let base_url = normalize_base_url(raw.base_url, "playback.base_url")?;
 
     Ok(PlaybackConfig {
         source: PlaybackSource {
@@ -292,6 +280,24 @@ const fn default_true() -> bool {
     true
 }
 
+/// Validates that `url` is an http/https base URL and normalizes it with a
+/// trailing slash so later `Url::join` calls resolve paths as segments rather
+/// than replacing the last one. `label` names the field for error messages
+/// (e.g. `"instance radarr base_url"`).
+fn normalize_base_url(mut url: Url, label: &str) -> Result<Url> {
+    if !matches!(url.scheme(), "http" | "https") {
+        bail!("{label} must use http or https");
+    }
+    if url.cannot_be_a_base() {
+        bail!("{label} cannot be used as a base URL");
+    }
+    if !url.path().ends_with('/') {
+        let path = format!("{}/", url.path());
+        url.set_path(&path);
+    }
+    Ok(url)
+}
+
 fn validate_identifier(entity: &str, id: &str) -> Result<()> {
     if id.is_empty()
         || !id
@@ -310,6 +316,7 @@ mod tests {
     use std::fs;
 
     use tempfile::tempdir;
+    use url::Url;
 
     use super::AppConfig;
 
@@ -343,9 +350,84 @@ api_key_env = "UNPOPULARR_TEST_NORMALIZE_RADARR_KEY"
             config.instances[0].base_url.as_str(),
             "http://localhost:7878/radarr/"
         );
+        assert!(config.instances[0].external_url.is_none());
         assert_eq!(config.sync.interval.as_secs(), 21_600);
         assert!(config.sync.run_on_startup);
         assert!(config.playback.is_none());
+    }
+
+    #[test]
+    fn normalizes_external_url_and_defaults_to_base_url() {
+        let directory = tempdir().expect("temp directory");
+        let path = directory.path().join("config.toml");
+        fs::write(
+            &path,
+            r#"
+[database]
+path = "unpopularr.db"
+
+[[instances]]
+id = "sonarr"
+name = "Sonarr"
+kind = "sonarr"
+base_url = "http://sonarr:8989"
+external_url = "https://sonarr.example.com/app"
+api_key_env = "UNPOPULARR_TEST_EXTERNAL_SONARR_KEY"
+
+[[instances]]
+id = "radarr"
+name = "Radarr"
+kind = "radarr"
+base_url = "http://radarr:7878"
+api_key_env = "UNPOPULARR_TEST_EXTERNAL_RADARR_KEY"
+"#,
+        )
+        .expect("write config");
+
+        let config =
+            AppConfig::load_from_with_env(path, |_| Ok("secret".to_owned())).expect("valid config");
+
+        // Configured external_url is normalized with a trailing slash.
+        assert_eq!(
+            config.instances[0].external_url.as_ref().map(Url::as_str),
+            Some("https://sonarr.example.com/app/")
+        );
+        assert_eq!(
+            config.instances[0].web_url().as_str(),
+            "https://sonarr.example.com/app/"
+        );
+        // Omitted external_url falls back to base_url for browser links.
+        assert!(config.instances[1].external_url.is_none());
+        assert_eq!(
+            config.instances[1].web_url().as_str(),
+            "http://radarr:7878/"
+        );
+    }
+
+    #[test]
+    fn rejects_external_url_with_unsupported_scheme() {
+        let directory = tempdir().expect("temp directory");
+        let path = directory.path().join("config.toml");
+        fs::write(
+            &path,
+            r#"
+[database]
+path = "unpopularr.db"
+
+[[instances]]
+id = "sonarr"
+name = "Sonarr"
+kind = "sonarr"
+base_url = "http://sonarr:8989"
+external_url = "ftp://sonarr.example.com"
+api_key_env = "UNPOPULARR_TEST_BAD_EXTERNAL_KEY"
+"#,
+        )
+        .expect("write config");
+
+        let error = AppConfig::load_from_with_env(path, |_| Ok("secret".to_owned()))
+            .expect_err("invalid external_url");
+        assert!(format!("{error:#}").contains("external_url must use http or https"));
     }
 
     #[test]

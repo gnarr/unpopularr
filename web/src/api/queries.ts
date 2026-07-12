@@ -1,8 +1,10 @@
+import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   PLAYBACK_NOT_CONFIGURED,
   getArtist,
   getContent,
+  getInstances,
   getMovie,
   getPlaybackSyncStatus,
   getSeries,
@@ -10,6 +12,7 @@ import {
 } from './client'
 import { ApiError } from './http'
 import { queryKeys } from './queryKeys'
+import type { InstanceLink } from './types'
 
 const POLL_INTERVAL_MS = 2000
 
@@ -19,6 +22,23 @@ export function useContent() {
     queryFn: getContent,
     staleTime: 60_000,
   })
+}
+
+export function useInstances() {
+  return useQuery({
+    queryKey: queryKeys.instances,
+    queryFn: getInstances,
+    // Instance config is static for a process; refetch rarely.
+    staleTime: Infinity,
+  })
+}
+
+// Instance deep-link metadata keyed by instance id, for O(1) lookup while
+// rendering per-item instance labels. Empty until the query resolves, so
+// callers naturally render plain labels (no link) in the meantime.
+export function useInstanceMap(): Map<string, InstanceLink> {
+  const { data } = useInstances()
+  return useMemo(() => new Map((data ?? []).map((link) => [link.id, link])), [data])
 }
 
 export function useSeries(tvdbId: number) {

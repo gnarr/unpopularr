@@ -38,6 +38,11 @@ id = "sonarr-hd"
 name = "Sonarr HD"
 kind = "sonarr"
 base_url = "http://sonarr:8989"
+# Optional. Browser-facing URL used for the "open in Sonarr" deep links on the
+# catalog and detail pages. Set this when base_url is only reachable internally
+# (e.g. a Docker service name) and the web UI is served elsewhere, such as
+# behind a reverse proxy. Defaults to base_url when omitted.
+external_url = "https://sonarr.example.com"
 api_key_env = "SONARR_HD_API_KEY"
 
 [[instances]]
