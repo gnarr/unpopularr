@@ -2,6 +2,14 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [0.7.0](https://github.com/gnarr/unpopularr/compare/c5492e01a4c39dc44d29e18a32f4b5a8718623cc..0.7.0) - 2026-07-13
+#### Features
+- add instance deep links - ([c5492e0](https://github.com/gnarr/unpopularr/commit/c5492e01a4c39dc44d29e18a32f4b5a8718623cc)) - Gunnar Cortes
+#### Bug Fixes
+- (**deep-links**) build secure per-instance paths - ([f54d671](https://github.com/gnarr/unpopularr/commit/f54d671897ca5b1df215d352809783dede39c2ca)) - Gunnar Cortes
+
+- - -
+
 ## [0.6.0](https://github.com/gnarr/unpopularr/compare/537adfb05373f38ac36636823ce76ce9c98b5a58..0.6.0) - 2026-07-11
 #### Features
 - (**movie**) add playback chart resolution toggle - ([4aa54a6](https://github.com/gnarr/unpopularr/commit/4aa54a643bad68fc9c5efd93bb5c0d97135f374f)) - Gunnar Cortes
