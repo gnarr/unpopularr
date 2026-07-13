@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { useNavigate } from 'react-router'
 import { useContent } from '../api/queries'
 import type { ContentType } from '../api/types'
@@ -10,24 +10,28 @@ import { StatCardSkeleton, TableSkeleton } from '../components/Skeletons'
 import { CatalogStats } from './CatalogStats'
 import { CatalogTable } from './CatalogTable'
 import { CatalogToolbar } from './CatalogToolbar'
-
-const ALL_TYPES: ContentType[] = ['movie', 'series', 'artist']
+import { useCatalogSettings } from './catalogSettings'
 
 export function CatalogView() {
   const navigate = useNavigate()
   const content = useContent()
-  const [search, setSearch] = useState('')
-  const [types, setTypes] = useState<Set<ContentType>>(() => new Set(ALL_TYPES))
-  const [instanceIds, setInstanceIds] = useState<Set<string>>(() => new Set())
-  const [neverPlayedOnly, setNeverPlayedOnly] = useState(false)
+  const [settings, update, resetFilters] = useCatalogSettings()
 
   const items = useMemo(() => content.data ?? [], [content.data])
   const hasPlayback = useMemo(() => playbackAvailable(items), [items])
 
+  const types = useMemo(() => new Set<ContentType>(settings.types), [settings.types])
+  const instanceIds = useMemo(() => new Set(settings.instanceIds), [settings.instanceIds])
+
   const filtered = useMemo(() => {
-    const filters: CatalogFilters = { search, types, instanceIds, neverPlayedOnly }
+    const filters: CatalogFilters = {
+      search: settings.search,
+      types,
+      instanceIds,
+      neverPlayedOnly: settings.neverPlayedOnly,
+    }
     return items.filter((item) => matchesFilters(item, filters))
-  }, [items, search, types, instanceIds, neverPlayedOnly])
+  }, [items, settings.search, types, instanceIds, settings.neverPlayedOnly])
 
   if (content.isPending) {
     return (
@@ -67,14 +71,14 @@ export function CatalogView() {
       <CatalogStats items={items} hasPlayback={hasPlayback} />
       <CatalogToolbar
         items={items}
-        search={search}
-        onSearch={setSearch}
+        search={settings.search}
+        onSearch={(value) => update({ search: value })}
         types={types}
-        onTypes={setTypes}
+        onTypes={(value) => update({ types: [...value] })}
         instanceIds={instanceIds}
-        onInstanceIds={setInstanceIds}
-        neverPlayedOnly={neverPlayedOnly}
-        onNeverPlayedOnly={setNeverPlayedOnly}
+        onInstanceIds={(value) => update({ instanceIds: [...value] })}
+        neverPlayedOnly={settings.neverPlayedOnly}
+        onNeverPlayedOnly={(value) => update({ neverPlayedOnly: value })}
         hasPlayback={hasPlayback}
       />
       {!hasPlayback && (
@@ -86,21 +90,15 @@ export function CatalogView() {
       {filtered.length === 0 ? (
         <EmptyState
           title="No items match your filters"
-          action={
-            <Button
-              onClick={() => {
-                setSearch('')
-                setTypes(new Set(ALL_TYPES))
-                setInstanceIds(new Set())
-                setNeverPlayedOnly(false)
-              }}
-            >
-              Clear filters
-            </Button>
-          }
+          action={<Button onClick={resetFilters}>Clear filters</Button>}
         />
       ) : (
-        <CatalogTable items={filtered} hasPlayback={hasPlayback} />
+        <CatalogTable
+          items={filtered}
+          hasPlayback={hasPlayback}
+          sorting={settings.sorting}
+          onSortingChange={(sorting) => update({ sorting })}
+        />
       )}
     </div>
   )
