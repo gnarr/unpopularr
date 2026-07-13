@@ -20,7 +20,6 @@ describe('getSeries', () => {
     const details: SeriesDetails = {
       displayName: 'The Wire',
       tvdbId: 79126,
-      titleSlug: 'the-wire',
       year: 2002,
       sizeOnDiskBytes: 200,
       fileCount: 60,

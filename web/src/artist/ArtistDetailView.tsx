@@ -2,7 +2,6 @@ import { Link, useNavigate, useParams } from 'react-router'
 import { useArtist } from '../api/queries'
 import { ApiError } from '../api/http'
 import type { ArtistDetails } from '../api/types'
-import type { LinkTarget } from '../lib/deepLink'
 import { Button } from '../components/Button'
 import { DetailHeaderCard } from '../components/DetailHeaderCard'
 import { EmptyState } from '../components/EmptyState'
@@ -47,7 +46,6 @@ function NotFound({ raw, onBack }: { raw?: string; onBack: () => void }) {
 }
 
 function ArtistDetail({ data }: { data: ArtistDetails }) {
-  const target: LinkTarget = { contentType: 'artist', musicBrainzId: data.musicBrainzId }
   return (
     <div className="space-y-6">
       <Link to="/" className="inline-block text-sm text-slate-400 hover:text-slate-200">
@@ -58,7 +56,6 @@ function ArtistDetail({ data }: { data: ArtistDetails }) {
         type="artist"
         displayName={data.displayName}
         instances={data.instances}
-        target={target}
         sizeOnDiskBytes={data.sizeOnDiskBytes}
         fileCount={data.fileCount}
         playback={data.playback}
@@ -112,7 +109,6 @@ function ArtistDetail({ data }: { data: ArtistDetails }) {
 
       <InstanceTable
         extraHeader="Albums"
-        target={target}
         rows={data.instanceDetails.map((detail) => ({
           instance: detail.instance,
           sizeOnDiskBytes: detail.sizeOnDiskBytes,

@@ -1,36 +1,15 @@
-// Builds "open in the *arr web UI" deep links. The route path differs per
-// service: Radarr routes movies by TMDB id, Lidarr artists by MusicBrainz id,
-// and Sonarr series by title slug.
-import type { ContentType, InstanceKind, InstanceLink } from '../api/types'
+// Builds "open in the *arr web UI" deep links. The backend supplies a
+// per-instance, per-item route path (e.g. `movie/inception-27205`) on each
+// instance reference; here we only join it onto that instance's external URL.
+import type { InstanceKind } from '../api/types'
 
-export interface LinkTarget {
-  contentType: ContentType
-  tmdbId?: number
-  titleSlug?: string
-  musicBrainzId?: string
-}
-
-// The path (relative to an instance's base URL) that the *arr web UI routes on,
-// or null when the required id isn't available (e.g. a series synced before the
-// slug was captured) — in which case no deep link should be rendered.
-export function deepLinkPath(target: LinkTarget): string | null {
-  switch (target.contentType) {
-    case 'movie':
-      return target.tmdbId != null ? `movie/${target.tmdbId}` : null
-    case 'series':
-      return target.titleSlug ? `series/${encodeURIComponent(target.titleSlug)}` : null
-    case 'artist':
-      return target.musicBrainzId ? `artist/${encodeURIComponent(target.musicBrainzId)}` : null
-  }
-}
-
-// Absolute deep-link URL for one instance, or null when no link can be built.
-export function deepLinkHref(instance: InstanceLink, target: LinkTarget): string | null {
-  const path = deepLinkPath(target)
-  if (path === null) return null
+// Absolute deep-link URL, or null when the instance has no route path (e.g. a
+// snapshot synced before the slug was captured) or the URL can't be built.
+export function deepLinkHref(externalUrl: string, path: string | null): string | null {
+  if (!path) return null
   try {
     // externalUrl always carries a trailing slash, so join treats it as a base.
-    return new URL(path, instance.externalUrl).toString()
+    return new URL(path, externalUrl).toString()
   } catch {
     return null
   }

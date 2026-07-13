@@ -173,15 +173,16 @@ impl CollectionRepository for SqliteCollectionRepository {
                     sqlx::query(
                         r#"
                         INSERT INTO movie_snapshots (
-                            instance_id, tmdb_id, title, year, size_on_disk_bytes,
-                            file_count, added_at
+                            instance_id, tmdb_id, title, title_slug, year,
+                            size_on_disk_bytes, file_count, added_at
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                         "#,
                     )
                     .bind(&instance.id)
                     .bind(movie.tmdb_id)
                     .bind(&movie.title)
+                    .bind(&movie.title_slug)
                     .bind(movie.year)
                     .bind(movie.size_on_disk_bytes)
                     .bind(movie.file_count)
@@ -601,6 +602,7 @@ mod tests {
                 &Snapshot::Movies(vec![MovieSnapshot {
                     tmdb_id: 1,
                     title: "Movie".to_owned(),
+                    title_slug: "movie-1".to_owned(),
                     year: 2024,
                     size_on_disk_bytes: 100,
                     file_count: 1,
@@ -721,6 +723,7 @@ mod tests {
                 &Snapshot::Movies(vec![MovieSnapshot {
                     tmdb_id: 1,
                     title: "Preserved".to_owned(),
+                    title_slug: "preserved-1".to_owned(),
                     year: 2024,
                     size_on_disk_bytes: 100,
                     file_count: 1,

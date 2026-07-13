@@ -2,7 +2,6 @@ import { Link, useNavigate, useParams } from 'react-router'
 import { useMovie } from '../api/queries'
 import { ApiError } from '../api/http'
 import type { MovieDetails } from '../api/types'
-import type { LinkTarget } from '../lib/deepLink'
 import { Button } from '../components/Button'
 import { DetailHeaderCard } from '../components/DetailHeaderCard'
 import { EmptyState } from '../components/EmptyState'
@@ -47,7 +46,6 @@ function NotFound({ raw, onBack }: { raw?: string; onBack: () => void }) {
 }
 
 function MovieDetail({ data }: { data: MovieDetails }) {
-  const target: LinkTarget = { contentType: 'movie', tmdbId: data.tmdbId }
   return (
     <div className="space-y-6">
       <Link to="/" className="inline-block text-sm text-slate-400 hover:text-slate-200">
@@ -59,7 +57,6 @@ function MovieDetail({ data }: { data: MovieDetails }) {
         displayName={data.displayName}
         year={data.year}
         instances={data.instances}
-        target={target}
         sizeOnDiskBytes={data.sizeOnDiskBytes}
         fileCount={data.fileCount}
         playback={data.playback}
@@ -77,7 +74,6 @@ function MovieDetail({ data }: { data: MovieDetails }) {
       )}
 
       <InstanceTable
-        target={target}
         rows={data.instanceDetails.map((detail) => ({
           instance: detail.instance,
           sizeOnDiskBytes: detail.sizeOnDiskBytes,

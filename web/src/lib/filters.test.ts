@@ -8,7 +8,14 @@ function movie(overrides: Partial<MovieItem> = {}): MovieItem {
     displayName: 'The Matrix',
     sizeOnDiskBytes: 100,
     fileCount: 1,
-    instances: [{ id: 'radarr-hd', name: 'Radarr HD', lastSuccessfulSyncAt: '2026-01-01T00:00:00Z' }],
+    instances: [
+      {
+        id: 'radarr-hd',
+        name: 'Radarr HD',
+        lastSuccessfulSyncAt: '2026-01-01T00:00:00Z',
+        deepLinkPath: 'movie/the-matrix-603',
+      },
+    ],
     playback: null,
     tmdbId: 603,
     year: 1999,

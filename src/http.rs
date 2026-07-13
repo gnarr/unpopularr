@@ -89,7 +89,7 @@ async fn instances(State(state): State<Arc<AppState>>) -> Response {
         .map(|instance| InstanceLink {
             id: instance.id.clone(),
             kind: instance.kind,
-            external_url: instance.web_url().to_string(),
+            external_url: instance.web_url_sanitized(),
         })
         .collect();
     Json(links).into_response()
@@ -625,7 +625,11 @@ mod tests {
                 name: "Sonarr".to_owned(),
                 kind: InstanceKind::Sonarr,
                 base_url: Url::parse("http://sonarr:8989/").expect("URL"),
-                external_url: Some(Url::parse("https://sonarr.example.com/").expect("URL")),
+                // Credentials + query embedded in the configured URL must be
+                // stripped before reaching the browser.
+                external_url: Some(
+                    Url::parse("https://user:tok@sonarr.example.com/?apikey=leak").expect("URL"),
+                ),
                 api_key: "super-secret-key".to_owned(),
                 config_order: 0,
             },
@@ -656,15 +660,18 @@ mod tests {
         assert_eq!(list.len(), 2);
         assert_eq!(list[0]["id"], "sonarr");
         assert_eq!(list[0]["kind"], "sonarr");
-        // A configured external_url wins over the internal API base_url.
+        // A configured external_url wins over the internal API base_url, with
+        // embedded credentials and query stripped.
         assert_eq!(list[0]["externalUrl"], "https://sonarr.example.com/");
         // Falls back to base_url when external_url is absent.
         assert_eq!(list[1]["externalUrl"], "http://radarr:7878/");
-        // API keys must never leak into the browser-facing payload.
+        // Neither API keys nor URL-embedded secrets may leak to the browser.
         let raw = serde_json::to_string(&body).expect("serialize");
         assert!(!raw.contains("super-secret-key"));
         assert!(!raw.contains("another-secret"));
         assert!(!raw.contains("apiKey"));
+        assert!(!raw.contains("tok"));
+        assert!(!raw.contains("leak"));
     }
 
     #[tokio::test]
@@ -749,10 +756,12 @@ mod tests {
             .expect("response body");
         let details: Value = serde_json::from_slice(&body).expect("series JSON");
         assert_eq!(details["displayName"], "Show"); // lowest config_order wins
-        assert_eq!(details["titleSlug"], "show"); // slug follows the same winner
         assert_eq!(details["sizeOnDiskBytes"], 300);
         assert_eq!(details["fileCount"], 5);
         assert_eq!(details["instances"].as_array().expect("instances").len(), 2);
+        // Each instance carries its own Sonarr deep-link path (per-instance slug).
+        assert_eq!(details["instances"][0]["deepLinkPath"], "series/show");
+        assert_eq!(details["instances"][1]["deepLinkPath"], "series/other");
         assert_eq!(
             details["seasons"][0],
             serde_json::json!({
@@ -927,8 +936,9 @@ mod tests {
         sqlx::query(
             r#"
             INSERT INTO movie_snapshots
-                (instance_id, tmdb_id, title, year, size_on_disk_bytes, file_count)
-            VALUES ('a', 42, 'Movie', 2020, 100, 1), ('b', 42, 'Other', 2021, 400, 1)
+                (instance_id, tmdb_id, title, title_slug, year, size_on_disk_bytes, file_count)
+            VALUES ('a', 42, 'Movie', 'movie-42', 2020, 100, 1),
+                   ('b', 42, 'Other', 'other-42', 2021, 400, 1)
             "#,
         )
         .execute(&pool)
@@ -943,11 +953,18 @@ mod tests {
         assert_eq!(details["sizeOnDiskBytes"], 500);
         assert_eq!(details["fileCount"], 2);
         assert_eq!(details["instances"].as_array().expect("instances").len(), 2);
+        // Radarr deep links use the per-instance titleSlug, not the bare TMDB id.
+        assert_eq!(details["instances"][0]["deepLinkPath"], "movie/movie-42");
+        assert_eq!(details["instances"][1]["deepLinkPath"], "movie/other-42");
         let instance_details = details["instanceDetails"]
             .as_array()
             .expect("instance details");
         assert_eq!(instance_details.len(), 2);
         assert_eq!(instance_details[0]["instance"]["id"], "a");
+        assert_eq!(
+            instance_details[0]["instance"]["deepLinkPath"],
+            "movie/movie-42"
+        );
         assert_eq!(instance_details[0]["sizeOnDiskBytes"], 100);
         assert_eq!(instance_details[1]["sizeOnDiskBytes"], 400);
         assert!(details["playback"].is_null());
@@ -1104,6 +1121,12 @@ mod tests {
             .as_array()
             .expect("instance details");
         assert_eq!(instance_details[0]["instance"]["id"], "a");
+        // Lidarr deep links route by the (global) MusicBrainz id.
+        assert_eq!(details["instances"][0]["deepLinkPath"], "artist/artist-1");
+        assert_eq!(
+            instance_details[0]["instance"]["deepLinkPath"],
+            "artist/artist-1"
+        );
         assert_eq!(instance_details[0]["albumCount"], 2);
         assert_eq!(instance_details[1]["albumCount"], 1);
         assert!(details["playback"].is_null());

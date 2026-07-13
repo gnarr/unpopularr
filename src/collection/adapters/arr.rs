@@ -58,6 +58,7 @@ impl ArrClient {
                     MovieSnapshot {
                         tmdb_id: movie.tmdb_id,
                         title: movie.title,
+                        title_slug: movie.title_slug,
                         year: movie.year,
                         size_on_disk_bytes: non_negative(
                             statistics.size_on_disk.or(movie.size_on_disk).unwrap_or(0),
@@ -293,6 +294,11 @@ fn normalize_musicbrainz_id(id: &str, entity: &str) -> Result<String> {
 struct RadarrMovie {
     tmdb_id: i64,
     title: String,
+    /// Slug Radarr's web UI routes on (`/movie/{titleSlug}`, e.g.
+    /// `inception-27205`). Defaulted so a rare older API response without it
+    /// degrades to a hidden deep link.
+    #[serde(default)]
+    title_slug: String,
     #[serde(default)]
     year: i64,
     size_on_disk: Option<i64>,
@@ -435,6 +441,7 @@ mod tests {
                 ResponseTemplate::new(200).set_body_json(serde_json::json!([{
                     "tmdbId": 42,
                     "title": "Movie",
+                    "titleSlug": "movie-42",
                     "year": 2024,
                     "added": "2024-03-15T10:00:00Z",
                     "statistics": {"movieFileCount": 2, "sizeOnDisk": 1234}
@@ -453,6 +460,7 @@ mod tests {
             panic!("expected movies");
         };
         assert_eq!(movies[0].tmdb_id, 42);
+        assert_eq!(movies[0].title_slug, "movie-42");
         assert_eq!(movies[0].file_count, 2);
         assert_eq!(movies[0].size_on_disk_bytes, 1234);
         assert_eq!(

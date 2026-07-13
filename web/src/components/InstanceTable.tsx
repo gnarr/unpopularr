@@ -1,6 +1,6 @@
 import type { InstanceReference } from '../api/types'
 import { useInstanceMap } from '../api/queries'
-import { arrName, deepLinkHref, type LinkTarget } from '../lib/deepLink'
+import { arrName, deepLinkHref } from '../lib/deepLink'
 import { formatBytes } from '../lib/format'
 import { ArrLinkIcon } from './ArrLinkIcon'
 
@@ -13,17 +13,9 @@ export interface InstanceRow {
 }
 
 // The per-instance breakdown on detail pages. Single-instance setups skip it —
-// the breakdown would just repeat the header stats. `target` enables the
-// per-instance "open in the *arr web UI" deep link.
-export function InstanceTable({
-  rows,
-  extraHeader,
-  target,
-}: {
-  rows: InstanceRow[]
-  extraHeader?: string
-  target?: LinkTarget
-}) {
+// the breakdown would just repeat the header stats. Each row's instance carries
+// its own "open in the *arr web UI" deep link.
+export function InstanceTable({ rows, extraHeader }: { rows: InstanceRow[]; extraHeader?: string }) {
   const instanceMap = useInstanceMap()
 
   if (rows.length <= 1) return null
@@ -46,7 +38,7 @@ export function InstanceTable({
           <tbody>
             {rows.map((row) => {
               const link = instanceMap.get(row.instance.id)
-              const href = target && link ? deepLinkHref(link, target) : null
+              const href = link ? deepLinkHref(link.externalUrl, row.instance.deepLinkPath) : null
               return (
               <tr key={row.instance.id} className="hover:bg-slate-800/30">
                 <td className="border-b border-slate-800/60 px-3 py-1.5 text-slate-200">
