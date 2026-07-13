@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import {
   flexRender,
   getCoreRowModel,
@@ -13,20 +13,24 @@ import { buildColumns } from './columns'
 export function CatalogTable({
   items,
   hasPlayback,
+  sorting,
+  onSortingChange,
 }: {
   items: ContentItem[]
   hasPlayback: boolean
+  sorting: SortingState
+  onSortingChange: (sorting: SortingState) => void
 }) {
   const columns = useMemo(() => buildColumns(hasPlayback), [hasPlayback])
-  const [sorting, setSorting] = useState<SortingState>([
-    { id: 'sizeOnDiskBytes', desc: true },
-  ])
 
   const table = useReactTable({
     data: items,
     columns,
     state: { sorting },
-    onSortingChange: setSorting,
+    // react-table hands us an updater (value or fn); resolve it against the
+    // current sorting so the parent only ever stores a plain value.
+    onSortingChange: (updater) =>
+      onSortingChange(typeof updater === 'function' ? updater(sorting) : updater),
     getRowId: rowId,
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
