@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [0.8.0](https://github.com/gnarr/unpopularr/compare/7c7d5dd563a4a10772fc776ef8ee65bb487f4e2e..0.8.0) - 2026-07-13
+#### Features
+- persist catalog settings - ([7c7d5dd](https://github.com/gnarr/unpopularr/commit/7c7d5dd563a4a10772fc776ef8ee65bb487f4e2e)) - Gunnar Cortes
+
+- - -
+
 ## [0.7.0](https://github.com/gnarr/unpopularr/compare/c5492e01a4c39dc44d29e18a32f4b5a8718623cc..0.7.0) - 2026-07-13
 #### Features
 - add instance deep links - ([c5492e0](https://github.com/gnarr/unpopularr/commit/c5492e01a4c39dc44d29e18a32f4b5a8718623cc)) - Gunnar Cortes
