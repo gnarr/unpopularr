@@ -5,6 +5,10 @@ export interface InstanceReference {
   id: string
   name: string
   lastSuccessfulSyncAt: string
+  // Path into this instance's *arr web UI for the item this reference belongs
+  // to (e.g. `movie/inception-27205`), relative to the instance's external
+  // URL. `null` when the routing slug isn't available yet (pre-slug snapshot).
+  deepLinkPath: string | null
 }
 
 export interface PlaybackMetrics {
@@ -42,9 +46,6 @@ export interface MovieItem extends ContentBase {
 export interface SeriesItem extends ContentBase {
   contentType: 'series'
   tvdbId: number
-  // Sonarr's URL slug, used to build web-UI deep links. '' for series synced
-  // before the slug was captured; the next sync fills it.
-  titleSlug: string
   year: number
   seasonsWithFiles: number
 }
@@ -92,9 +93,6 @@ export interface SeriesInstanceDetail {
 export interface SeriesDetails {
   displayName: string
   tvdbId: number
-  // Sonarr's URL slug, used to build web-UI deep links. '' until a sync
-  // captures it (see SeriesItem.titleSlug).
-  titleSlug: string
   year: number
   sizeOnDiskBytes: number
   fileCount: number

@@ -24,6 +24,8 @@ impl Snapshot {
 pub struct MovieSnapshot {
     pub tmdb_id: i64,
     pub title: String,
+    /// Radarr's URL slug for the movie, used to build web-UI deep links.
+    pub title_slug: String,
     pub year: i64,
     pub size_on_disk_bytes: i64,
     pub file_count: i64,

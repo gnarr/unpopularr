@@ -63,9 +63,7 @@ export function buildColumns(hasPlayback: boolean): Array<ColumnDef<ContentItem,
     helper.display({
       id: 'instances',
       header: 'Instances',
-      cell: (ctx) => (
-        <InstanceChips instances={ctx.row.original.instances} target={ctx.row.original} />
-      ),
+      cell: (ctx) => <InstanceChips instances={ctx.row.original.instances} />,
     }),
   ]
 

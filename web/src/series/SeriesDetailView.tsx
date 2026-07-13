@@ -2,7 +2,6 @@ import { Link, useNavigate, useParams } from 'react-router'
 import { useSeries } from '../api/queries'
 import { ApiError } from '../api/http'
 import type { SeriesDetails } from '../api/types'
-import type { LinkTarget } from '../lib/deepLink'
 import { Button } from '../components/Button'
 import { DetailHeaderCard } from '../components/DetailHeaderCard'
 import { EmptyState } from '../components/EmptyState'
@@ -52,7 +51,6 @@ function NotFound({ raw, onBack }: { raw?: string; onBack: () => void }) {
 function SeriesDetail({ data }: { data: SeriesDetails }) {
   const { playback } = data
   const watchStrip = buildEpisodeStrip(data.seasons)
-  const target: LinkTarget = { contentType: 'series', titleSlug: data.titleSlug }
 
   return (
     <div className="space-y-6">
@@ -65,7 +63,6 @@ function SeriesDetail({ data }: { data: SeriesDetails }) {
         displayName={data.displayName}
         year={data.year}
         instances={data.instances}
-        target={target}
         sizeOnDiskBytes={data.sizeOnDiskBytes}
         fileCount={data.fileCount}
         playback={playback}
@@ -109,7 +106,6 @@ function SeriesDetail({ data }: { data: SeriesDetails }) {
 
       <InstanceTable
         extraHeader="Seasons"
-        target={target}
         rows={data.instanceDetails.map((detail) => ({
           instance: detail.instance,
           sizeOnDiskBytes: detail.sizeOnDiskBytes,

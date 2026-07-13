@@ -146,7 +146,8 @@ impl CatalogRepository for SqliteCatalogRepository {
 
         let movie_rows = sqlx::query(
             r#"
-            SELECT m.tmdb_id, m.title, m.year, m.size_on_disk_bytes, m.file_count,
+            SELECT m.tmdb_id, m.title, m.title_slug, m.year, m.size_on_disk_bytes,
+                   m.file_count,
                    i.id AS instance_id, i.name AS instance_name, i.config_order,
                    i.last_successful_sync_at
             FROM movie_snapshots m
@@ -162,6 +163,7 @@ impl CatalogRepository for SqliteCatalogRepository {
                 Ok(MovieSource {
                     tmdb_id: row.try_get("tmdb_id")?,
                     title: row.try_get("title")?,
+                    title_slug: row.try_get("title_slug")?,
                     year: row.try_get("year")?,
                     size_on_disk_bytes: row.try_get("size_on_disk_bytes")?,
                     file_count: row.try_get("file_count")?,
@@ -448,7 +450,8 @@ impl CatalogRepository for SqliteCatalogRepository {
     async fn load_movie(&self, tmdb_id: i64) -> Result<Option<MovieDetailsSources>> {
         let movie_rows = sqlx::query(
             r#"
-            SELECT m.title, m.year, m.size_on_disk_bytes, m.file_count, m.added_at,
+            SELECT m.title, m.title_slug, m.year, m.size_on_disk_bytes, m.file_count,
+                   m.added_at,
                    i.id AS instance_id, i.name AS instance_name, i.config_order,
                    i.last_successful_sync_at
             FROM movie_snapshots m
@@ -470,6 +473,7 @@ impl CatalogRepository for SqliteCatalogRepository {
                 Ok(MovieSource {
                     tmdb_id,
                     title: row.try_get("title")?,
+                    title_slug: row.try_get("title_slug")?,
                     year: row.try_get("year")?,
                     size_on_disk_bytes: row.try_get("size_on_disk_bytes")?,
                     file_count: row.try_get("file_count")?,
@@ -601,6 +605,9 @@ fn instance_reference_with_id(
         id,
         name: row.try_get("instance_name")?,
         last_successful_sync_at,
+        // The deep-link path depends on the item this reference is attached to;
+        // the aggregation layer fills it in per (item, instance).
+        deep_link_path: None,
     })
 }
 

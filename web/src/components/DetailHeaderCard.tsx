@@ -1,5 +1,4 @@
 import type { ContentType, InstanceReference, PlaybackMetrics } from '../api/types'
-import type { LinkTarget } from '../lib/deepLink'
 import { InstanceChips } from './InstanceChips'
 import { StatCard } from './StatCard'
 import { TypeBadge } from './TypeBadge'
@@ -11,8 +10,6 @@ interface DetailHeaderCardProps {
   // Omitted for artists — Lidarr doesn't model a year.
   year?: number
   instances: InstanceReference[]
-  // Enables the per-instance deep link on the header chips.
-  target?: LinkTarget
   sizeOnDiskBytes: number
   fileCount: number
   playback: PlaybackMetrics | null
@@ -23,7 +20,6 @@ export function DetailHeaderCard({
   displayName,
   year,
   instances,
-  target,
   sizeOnDiskBytes,
   fileCount,
   playback,
@@ -38,7 +34,7 @@ export function DetailHeaderCard({
           {displayName} {year !== undefined && <span className="text-slate-500">({year})</span>}
         </h1>
         <div className="ml-auto">
-          <InstanceChips instances={instances} target={target} />
+          <InstanceChips instances={instances} />
         </div>
       </header>
       <div className="grid grid-cols-2 gap-4 p-4 sm:grid-cols-4">

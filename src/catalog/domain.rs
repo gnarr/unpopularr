@@ -9,6 +9,13 @@ pub struct InstanceReference {
     pub id: String,
     pub name: String,
     pub last_successful_sync_at: DateTime<Utc>,
+    /// Path into this instance's *arr web UI for the item this reference is
+    /// attached to (e.g. `movie/inception-27205`, `series/breaking-bad`,
+    /// `artist/{mbid}`), relative to the instance's external URL. `None` when
+    /// the routing slug isn't available yet (e.g. a snapshot synced before the
+    /// slug column existed). Always item-scoped: an `InstanceReference` only
+    /// ever appears within a specific content item.
+    pub deep_link_path: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -63,6 +70,7 @@ pub struct DailyPlayback {
 pub struct MovieSource {
     pub tmdb_id: i64,
     pub title: String,
+    pub title_slug: String,
     pub year: i64,
     pub size_on_disk_bytes: i64,
     pub file_count: i64,
@@ -216,7 +224,6 @@ pub struct SeriesInstanceDetail {
 pub struct SeriesDetails {
     pub display_name: String,
     pub tvdb_id: i64,
-    pub title_slug: String,
     pub year: i64,
     pub size_on_disk_bytes: i64,
     pub file_count: i64,
@@ -316,7 +323,6 @@ pub enum ContentItem {
         file_count: i64,
         instances: Vec<InstanceReference>,
         tvdb_id: i64,
-        title_slug: String,
         year: i64,
         seasons_with_files: i64,
         playback: Option<PlaybackMetrics>,
@@ -360,6 +366,13 @@ impl ContentItem {
     }
 }
 
+/// Builds the *arr web-UI path for an item on one instance, or `None` when the
+/// routing slug is empty (unavailable until the next sync). `route_base` is the
+/// UI route prefix: `movie` (Radarr), `series` (Sonarr), or `artist` (Lidarr).
+fn deep_link_path(route_base: &str, slug: &str) -> Option<String> {
+    (!slug.is_empty()).then(|| format!("{route_base}/{slug}"))
+}
+
 pub fn aggregate(mut sources: CatalogSources) -> Vec<ContentItem> {
     sources.movies.sort_by_key(|source| source.config_order);
     sources.series.sort_by_key(|source| source.config_order);
@@ -380,7 +393,9 @@ pub fn aggregate(mut sources: CatalogSources) -> Vec<ContentItem> {
         aggregate.size_on_disk_bytes += source.size_on_disk_bytes;
         aggregate.file_count += source.file_count;
         if source.file_count > 0 {
-            aggregate.instances.push(source.instance);
+            let mut instance = source.instance;
+            instance.deep_link_path = deep_link_path("movie", &source.title_slug);
+            aggregate.instances.push(instance);
         }
     }
 
@@ -390,7 +405,6 @@ pub fn aggregate(mut sources: CatalogSources) -> Vec<ContentItem> {
             .entry(source.tvdb_id)
             .or_insert_with(|| SeriesAggregate {
                 title: source.title,
-                title_slug: source.title_slug,
                 year: source.year,
                 size_on_disk_bytes: 0,
                 file_count: 0,
@@ -401,12 +415,15 @@ pub fn aggregate(mut sources: CatalogSources) -> Vec<ContentItem> {
         aggregate.file_count += source.file_count;
         aggregate.season_numbers.extend(source.season_numbers);
         if source.file_count > 0 {
-            aggregate.instances.push(source.instance);
+            let mut instance = source.instance;
+            instance.deep_link_path = deep_link_path("series", &source.title_slug);
+            aggregate.instances.push(instance);
         }
     }
 
     let mut artists = BTreeMap::<String, ArtistAggregate>::new();
     for source in sources.artists {
+        let deep_link = deep_link_path("artist", &source.musicbrainz_id);
         let aggregate = artists
             .entry(source.musicbrainz_id)
             .or_insert_with(|| ArtistAggregate {
@@ -422,7 +439,9 @@ pub fn aggregate(mut sources: CatalogSources) -> Vec<ContentItem> {
             .album_musicbrainz_ids
             .extend(source.album_musicbrainz_ids);
         if source.file_count > 0 {
-            aggregate.instances.push(source.instance);
+            let mut instance = source.instance;
+            instance.deep_link_path = deep_link;
+            aggregate.instances.push(instance);
         }
     }
 
@@ -445,7 +464,6 @@ pub fn aggregate(mut sources: CatalogSources) -> Vec<ContentItem> {
             file_count: series.file_count,
             instances: series.instances,
             tvdb_id,
-            title_slug: series.title_slug,
             year: series.year,
             seasons_with_files: i64::try_from(series.season_numbers.len()).unwrap_or(i64::MAX),
             playback: playback_metrics(playback.available, playback.series.get(&tvdb_id)),
@@ -486,7 +504,6 @@ pub fn aggregate_series(mut sources: SeriesDetailsSources) -> Option<SeriesDetai
     let first = sources.instances.first()?;
     let tvdb_id = first.tvdb_id;
     let display_name = first.title.clone();
-    let title_slug = first.title_slug.clone();
     let year = first.year;
 
     let mut size_on_disk_bytes = 0;
@@ -496,13 +513,15 @@ pub fn aggregate_series(mut sources: SeriesDetailsSources) -> Option<SeriesDetai
     for source in sources.instances {
         size_on_disk_bytes += source.size_on_disk_bytes;
         file_count += source.file_count;
+        let mut instance = source.instance;
+        instance.deep_link_path = deep_link_path("series", &source.title_slug);
         if source.file_count > 0 {
-            instances.push(source.instance.clone());
+            instances.push(instance.clone());
         }
         let mut season_numbers = source.season_numbers;
         season_numbers.sort_unstable();
         instance_details.push(SeriesInstanceDetail {
-            instance: source.instance,
+            instance,
             size_on_disk_bytes: source.size_on_disk_bytes,
             file_count: source.file_count,
             season_numbers,
@@ -612,7 +631,6 @@ pub fn aggregate_series(mut sources: SeriesDetailsSources) -> Option<SeriesDetai
     Some(SeriesDetails {
         display_name,
         tvdb_id,
-        title_slug,
         year,
         size_on_disk_bytes,
         file_count,
@@ -652,11 +670,13 @@ pub fn aggregate_movie(mut sources: MovieDetailsSources) -> Option<MovieDetails>
         if let Some(added) = source.available_at {
             available_at = Some(available_at.map_or(added, |current| current.min(added)));
         }
+        let mut instance = source.instance;
+        instance.deep_link_path = deep_link_path("movie", &source.title_slug);
         if source.file_count > 0 {
-            instances.push(source.instance.clone());
+            instances.push(instance.clone());
         }
         instance_details.push(MovieInstanceDetail {
-            instance: source.instance,
+            instance,
             size_on_disk_bytes: source.size_on_disk_bytes,
             file_count: source.file_count,
         });
@@ -684,6 +704,9 @@ pub fn aggregate_artist(mut sources: ArtistDetailsSources) -> Option<ArtistDetai
     let first = sources.instances.first()?;
     let music_brainz_id = first.musicbrainz_id.clone();
     let display_name = first.name.clone();
+    // The MBID is global (identical on every Lidarr instance), so every
+    // instance's deep link shares the same path.
+    let artist_link = deep_link_path("artist", &music_brainz_id);
 
     let mut size_on_disk_bytes = 0;
     let mut file_count = 0;
@@ -692,11 +715,13 @@ pub fn aggregate_artist(mut sources: ArtistDetailsSources) -> Option<ArtistDetai
     for source in sources.instances {
         size_on_disk_bytes += source.size_on_disk_bytes;
         file_count += source.file_count;
+        let mut instance = source.instance;
+        instance.deep_link_path = artist_link.clone();
         if source.file_count > 0 {
-            instances.push(source.instance.clone());
+            instances.push(instance.clone());
         }
         instance_details.push(ArtistInstanceDetail {
-            instance: source.instance,
+            instance,
             size_on_disk_bytes: source.size_on_disk_bytes,
             file_count: source.file_count,
             album_count: i64::try_from(source.album_musicbrainz_ids.len()).unwrap_or(i64::MAX),
@@ -772,7 +797,6 @@ struct MovieAggregate {
 
 struct SeriesAggregate {
     title: String,
-    title_slug: String,
     year: i64,
     size_on_disk_bytes: i64,
     file_count: i64,
@@ -807,6 +831,7 @@ mod tests {
             id: id.to_owned(),
             name: name.to_owned(),
             last_successful_sync_at: Utc::now(),
+            deep_link_path: None,
         }
     }
 
@@ -817,6 +842,7 @@ mod tests {
                 MovieSource {
                     tmdb_id: 10,
                     title: "Preferred".to_owned(),
+                    title_slug: "preferred-10".to_owned(),
                     year: 2020,
                     size_on_disk_bytes: 100,
                     file_count: 1,
@@ -827,6 +853,7 @@ mod tests {
                 MovieSource {
                     tmdb_id: 10,
                     title: "Other".to_owned(),
+                    title_slug: "other-10".to_owned(),
                     year: 2021,
                     size_on_disk_bytes: 400,
                     file_count: 1,
@@ -852,6 +879,16 @@ mod tests {
         assert_eq!(*size_on_disk_bytes, 500);
         assert_eq!(*file_count, 2);
         assert_eq!(instances.len(), 2);
+        // Each instance carries its own Radarr deep-link path (built from that
+        // instance's titleSlug), not a single globally-shared one.
+        assert_eq!(
+            instances[0].deep_link_path.as_deref(),
+            Some("movie/preferred-10")
+        );
+        assert_eq!(
+            instances[1].deep_link_path.as_deref(),
+            Some("movie/other-10")
+        );
     }
 
     #[test]
@@ -861,6 +898,7 @@ mod tests {
             movies: vec![MovieSource {
                 tmdb_id: 99,
                 title: "Empty".to_owned(),
+                title_slug: "empty-99".to_owned(),
                 year: 2022,
                 size_on_disk_bytes: 0,
                 file_count: 0,
@@ -937,6 +975,7 @@ mod tests {
         let movie = MovieSource {
             tmdb_id: 10,
             title: "Movie".to_owned(),
+            title_slug: "movie-10".to_owned(),
             year: 2024,
             size_on_disk_bytes: 100,
             file_count: 1,
@@ -1046,10 +1085,33 @@ mod tests {
         .expect("series details");
 
         assert_eq!(details.display_name, "Show"); // lowest config_order wins
-        assert_eq!(details.title_slug, "show"); // slug follows the same winner
         assert_eq!(details.size_on_disk_bytes, 300);
         assert_eq!(details.file_count, 5);
         assert_eq!(details.instances.len(), 2);
+        // Each instance keeps its own Sonarr slug rather than sharing one.
+        assert_eq!(
+            details.instances[0].deep_link_path.as_deref(),
+            Some("series/show")
+        );
+        assert_eq!(
+            details.instances[1].deep_link_path.as_deref(),
+            Some("series/other")
+        );
+        // The per-instance breakdown carries the same per-instance links.
+        assert_eq!(
+            details.instance_details[0]
+                .instance
+                .deep_link_path
+                .as_deref(),
+            Some("series/show")
+        );
+        assert_eq!(
+            details.instance_details[1]
+                .instance
+                .deep_link_path
+                .as_deref(),
+            Some("series/other")
+        );
         let empty_season = |season_number, file_count| SeriesSeasonDetail {
             season_number,
             file_count,
@@ -1281,6 +1343,7 @@ mod tests {
         MovieSource {
             tmdb_id: 10,
             title: title.to_owned(),
+            title_slug: title.to_lowercase(),
             year: 2020,
             size_on_disk_bytes,
             file_count,
