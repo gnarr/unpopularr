@@ -27,6 +27,17 @@ export interface DailyPlayback {
   playDurationSeconds: number
 }
 
+// One watching user's playback of an item, most plays first. Plays the backend
+// can't attribute to a user are reported via `unknownUserPlayCount` instead.
+export interface UserPlayback {
+  // Tautulli's stable per-user id (0 is the local Plex user).
+  userId: number
+  // Display name from the user's most recent session; null when the source
+  // never reported one.
+  userName: string | null
+  playback: PlaybackMetrics
+}
+
 interface ContentBase {
   displayName: string
   sizeOnDiskBytes: number
@@ -103,6 +114,11 @@ export interface SeriesDetails {
   // Series-level plays with no episode cell to land on (legacy aggregates,
   // events without positions, specials). Null when playback is unavailable.
   unattributedPlayCount: number | null
+  // Per-user playback, most plays first. Empty when playback is unavailable.
+  userPlayback: UserPlayback[]
+  // Plays not attributable to a user (legacy aggregates, events synced before
+  // user tracking). Null when playback is unavailable.
+  unknownUserPlayCount: number | null
 }
 
 // Per-movie detail (GET /api/v1/movies/{tmdbId}). Mirrors the backend
@@ -127,6 +143,11 @@ export interface MovieDetails {
   availableAt: string | null
   // Per-day playback totals, ascending by day.
   dailyPlayback: DailyPlayback[]
+  // Per-user playback, most plays first. Empty when playback is unavailable.
+  userPlayback: UserPlayback[]
+  // Plays not attributable to a user (legacy aggregates, events synced before
+  // user tracking). Null when playback is unavailable.
+  unknownUserPlayCount: number | null
 }
 
 // Per-artist detail (GET /api/v1/artists/{musicBrainzId}). Mirrors the backend
@@ -156,6 +177,11 @@ export interface ArtistDetails {
   albums: ArtistAlbumDetail[]
   instanceDetails: ArtistInstanceDetail[]
   playback: PlaybackMetrics | null
+  // Per-user playback, most plays first. Empty when playback is unavailable.
+  userPlayback: UserPlayback[]
+  // Plays not attributable to a user (legacy aggregates, events synced before
+  // user tracking). Null when playback is unavailable.
+  unknownUserPlayCount: number | null
 }
 
 // Browser-facing instance metadata (GET /api/v1/instances). `externalUrl` is

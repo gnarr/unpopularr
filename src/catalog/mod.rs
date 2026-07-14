@@ -10,6 +10,6 @@ pub use domain::{
     MovieDetails, MovieDetailsSources, MovieInstanceDetail, MovieSource, PlaybackMetrics,
     SeriesDetails, SeriesDetailsSources, SeriesEpisodeDetail, SeriesEpisodeFile,
     SeriesEpisodePlayback, SeriesInstanceDetail, SeriesSeasonDetail, SeriesSeasonFiles,
-    SeriesSource, aggregate, aggregate_artist, aggregate_movie, aggregate_series,
+    SeriesSource, UserPlayback, aggregate, aggregate_artist, aggregate_movie, aggregate_series,
 };
 pub use ports::CatalogRepository;

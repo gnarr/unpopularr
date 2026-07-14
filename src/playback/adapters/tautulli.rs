@@ -190,6 +190,8 @@ impl PlaybackSourceClient for TautulliClient {
                     duration_seconds: entry.duration_seconds,
                     season_number: entry.season_number,
                     episode_number: entry.episode_number,
+                    user_id: entry.user_id,
+                    user_name: entry.user_name,
                 });
             }
         }
@@ -272,6 +274,12 @@ struct HistoryRow {
     started: Option<i64>,
     #[serde(default, deserialize_with = "deserialize_optional_i64")]
     stopped: Option<i64>,
+    #[serde(default, deserialize_with = "deserialize_optional_i64")]
+    user_id: Option<i64>,
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
+    friendly_name: String,
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
+    user: String,
 }
 
 struct HistoryEntry {
@@ -282,6 +290,8 @@ struct HistoryEntry {
     duration_seconds: i64,
     season_number: Option<i64>,
     episode_number: Option<i64>,
+    user_id: Option<i64>,
+    user_name: Option<String>,
 }
 
 impl HistoryEntry {
@@ -314,6 +324,9 @@ impl HistoryEntry {
             .or_else(|| row.started.filter(|timestamp| *timestamp > 0))
             .or_else(|| row.date.filter(|timestamp| *timestamp > 0))
             .and_then(|timestamp| DateTime::from_timestamp(timestamp, 0));
+        // Tautulli's friendly_name is the user's current display name; the
+        // username is the fallback for users since deleted from Tautulli.
+        let user_name = non_empty(row.friendly_name).or_else(|| non_empty(row.user));
 
         Some(Self {
             lookup_key,
@@ -322,6 +335,9 @@ impl HistoryEntry {
             duration_seconds: row.play_duration.unwrap_or(0).max(0),
             season_number,
             episode_number,
+            // No positivity filter: Tautulli uses user_id 0 for the local user.
+            user_id: row.user_id,
+            user_name,
         })
     }
 }
@@ -397,6 +413,11 @@ fn parse_numeric_guid(guid: &str, prefixes: &[&str]) -> Option<i64> {
 
 fn first_guid_component(value: &str) -> Option<&str> {
     value.split(['/', '?']).next()
+}
+
+fn non_empty(value: String) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
 fn deserialize_i64<'de, D>(deserializer: D) -> Result<i64, D::Error>
@@ -500,7 +521,9 @@ mod tests {
                             "play_duration": 120,
                             "started": 100,
                             "stopped": 200,
-                            "user": "not retained",
+                            "user_id": 11,
+                            "user": "alice",
+                            "friendly_name": "Alice",
                             "ip_address": "not retained"
                         },
                         {
@@ -518,7 +541,10 @@ mod tests {
                             "parent_media_index": "2",
                             "media_index": 5,
                             "play_duration": 60,
-                            "started": 300
+                            "started": 300,
+                            "user_id": "12",
+                            "user": "bob",
+                            "friendly_name": ""
                         },
                         {
                             "media_type": "track",
@@ -527,7 +553,9 @@ mod tests {
                             "parent_media_index": 1,
                             "media_index": 9,
                             "play_duration": 30,
-                            "stopped": 400
+                            "stopped": 400,
+                            "user_id": 0,
+                            "friendly_name": "Local"
                         },
                         {
                             "media_type": "live",
@@ -581,21 +609,30 @@ mod tests {
         assert_eq!(snapshot.events[0].played_at.timestamp(), 200);
         assert_eq!(snapshot.events[0].season_number, None);
         assert_eq!(snapshot.events[0].episode_number, None);
+        assert_eq!(snapshot.events[0].user_id, Some(11));
+        assert_eq!(snapshot.events[0].user_name.as_deref(), Some("Alice"));
 
         // A second session of the same movie is its own event (no grouping).
+        // Rows without user fields stay unattributed.
         assert_eq!(snapshot.events[1].key, ContentKey::Movie(42));
         assert_eq!(snapshot.events[1].source_row_id, 2);
         assert_eq!(snapshot.events[1].duration_seconds, 80);
+        assert_eq!(snapshot.events[1].user_id, None);
+        assert_eq!(snapshot.events[1].user_name, None);
 
         // Falls back to `started` when `stopped` is absent. Episode positions
-        // are kept, including string-typed values from Tautulli.
+        // are kept, including string-typed values from Tautulli. An empty
+        // friendly_name falls back to the username.
         assert_eq!(snapshot.events[2].key, ContentKey::Series(7));
         assert_eq!(snapshot.events[2].source_row_id, 3);
         assert_eq!(snapshot.events[2].played_at.timestamp(), 300);
         assert_eq!(snapshot.events[2].season_number, Some(2));
         assert_eq!(snapshot.events[2].episode_number, Some(5));
+        assert_eq!(snapshot.events[2].user_id, Some(12));
+        assert_eq!(snapshot.events[2].user_name.as_deref(), Some("bob"));
 
         // Track positions are meaningless for the matrix and stay unset.
+        // user_id 0 is Tautulli's local user, a legitimate attribution.
         assert_eq!(
             snapshot.events[3].key,
             ContentKey::Artist("artist-id".to_owned())
@@ -603,6 +640,8 @@ mod tests {
         assert_eq!(snapshot.events[3].source_row_id, 4);
         assert_eq!(snapshot.events[3].season_number, None);
         assert_eq!(snapshot.events[3].episode_number, None);
+        assert_eq!(snapshot.events[3].user_id, Some(0));
+        assert_eq!(snapshot.events[3].user_name.as_deref(), Some("Local"));
     }
 
     #[tokio::test]
@@ -622,7 +661,10 @@ mod tests {
                             "grandparent_rating_key": "",
                             "play_duration": "120",
                             "started": null,
-                            "stopped": "200"
+                            "stopped": "200",
+                            "user_id": "",
+                            "friendly_name": null,
+                            "user": "   "
                         },
                         {
                             "media_type": "episode",
@@ -657,6 +699,9 @@ mod tests {
         assert_eq!(snapshot.events[0].source_row_id, 5);
         assert_eq!(snapshot.events[0].duration_seconds, 120);
         assert_eq!(snapshot.events[0].played_at.timestamp(), 200);
+        // Empty, null, and whitespace-only user fields mean no attribution.
+        assert_eq!(snapshot.events[0].user_id, None);
+        assert_eq!(snapshot.events[0].user_name, None);
     }
 
     #[tokio::test]

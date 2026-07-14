@@ -7,6 +7,7 @@ import { DetailHeaderCard } from '../components/DetailHeaderCard'
 import { EmptyState } from '../components/EmptyState'
 import { InstanceTable } from '../components/InstanceTable'
 import { DetailSkeleton } from '../components/Skeletons'
+import { UserPlaybackTable } from '../components/UserPlaybackTable'
 import { MoviePlaybackChart } from './MoviePlaybackChart'
 
 export function MovieDetailView() {
@@ -72,6 +73,8 @@ function MovieDetail({ data }: { data: MovieDetails }) {
           </div>
         </section>
       )}
+
+      <UserPlaybackTable users={data.userPlayback} unknownPlayCount={data.unknownUserPlayCount} />
 
       <InstanceTable
         rows={data.instanceDetails.map((detail) => ({

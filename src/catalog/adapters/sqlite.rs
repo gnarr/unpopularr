@@ -9,7 +9,7 @@ use crate::catalog::{
     ArtistAlbumFile, ArtistDetailsSources, ArtistSource, CatalogPlayback, CatalogRepository,
     CatalogSources, DailyPlayback, InstanceReference, MovieDetailsSources, MovieSource,
     PlaybackMetrics, SeriesDetailsSources, SeriesEpisodeFile, SeriesEpisodePlayback,
-    SeriesSeasonFiles, SeriesSource,
+    SeriesSeasonFiles, SeriesSource, UserPlayback,
 };
 
 #[derive(Clone)]
@@ -98,6 +98,59 @@ impl SqliteCatalogRepository {
                 date: row.try_get("date")?,
                 play_count: row.try_get("play_count")?,
                 play_duration_seconds: row.try_get("play_duration_seconds")?,
+            })
+        })
+        .collect()
+    }
+
+    /// Per-user playback totals for one item, most plays first. Excludes
+    /// events already counted in the legacy aggregate (like
+    /// [`Self::daily_movie_playback`]) so the rows plus the unattributed
+    /// remainder add up to the item's stored total. Grouping by user id alone
+    /// assumes a single playback source (a config invariant today). The bare
+    /// `user_name` column legally takes its value from the `MAX(played_at)`
+    /// row — SQLite's single-min/max rule — so each user shows the display
+    /// name of their most recent session.
+    async fn user_playback(
+        &self,
+        content_type: &str,
+        content_id: &str,
+    ) -> Result<Vec<UserPlayback>> {
+        sqlx::query(
+            r#"
+            SELECT events.user_id, events.user_name,
+                   COUNT(*) AS play_count,
+                   COALESCE(SUM(events.duration_seconds), 0) AS play_duration_seconds,
+                   MAX(events.played_at) AS last_played_at
+            FROM playback_events AS events
+            LEFT JOIN playback_legacy_snapshots AS legacy
+                ON legacy.source_id = events.source_id
+               AND legacy.content_type = events.content_type
+               AND legacy.content_id = events.content_id
+            WHERE events.content_type = ?1 AND events.content_id = ?2
+              AND events.user_id IS NOT NULL
+              AND (
+                  legacy.source_id IS NULL
+                  OR events.played_at > legacy.covered_until
+              )
+            GROUP BY events.user_id
+            ORDER BY play_count DESC, last_played_at DESC, events.user_id
+            "#,
+        )
+        .bind(content_type)
+        .bind(content_id)
+        .fetch_all(&self.pool)
+        .await?
+        .into_iter()
+        .map(|row| {
+            Ok(UserPlayback {
+                user_id: row.try_get("user_id")?,
+                user_name: row.try_get("user_name")?,
+                playback: PlaybackMetrics {
+                    play_count: row.try_get("play_count")?,
+                    play_duration_seconds: row.try_get("play_duration_seconds")?,
+                    last_played_at: row.try_get("last_played_at")?,
+                },
             })
         })
         .collect()
@@ -416,6 +469,11 @@ impl CatalogRepository for SqliteCatalogRepository {
         } else {
             Vec::new()
         };
+        let user_playback = if playback_available {
+            self.user_playback("series", &tvdb_id.to_string()).await?
+        } else {
+            Vec::new()
+        };
 
         let instances = series_rows
             .into_iter()
@@ -442,6 +500,7 @@ impl CatalogRepository for SqliteCatalogRepository {
             seasons,
             episodes,
             episode_playback,
+            user_playback,
             playback_available,
             playback,
         }))
@@ -496,10 +555,16 @@ impl CatalogRepository for SqliteCatalogRepository {
         } else {
             Vec::new()
         };
+        let user_playback = if playback_available {
+            self.user_playback("movie", &tmdb_id.to_string()).await?
+        } else {
+            Vec::new()
+        };
 
         Ok(Some(MovieDetailsSources {
             instances,
             daily_playback,
+            user_playback,
             playback_available,
             playback,
         }))
@@ -580,10 +645,16 @@ impl CatalogRepository for SqliteCatalogRepository {
         } else {
             None
         };
+        let user_playback = if playback_available {
+            self.user_playback("artist", musicbrainz_id).await?
+        } else {
+            Vec::new()
+        };
 
         Ok(Some(ArtistDetailsSources {
             instances,
             albums,
+            user_playback,
             playback_available,
             playback,
         }))
@@ -660,5 +731,68 @@ mod tests {
         assert_eq!(daily[0].date, "2024-01-20");
         assert_eq!(daily[0].play_count, 1);
         assert_eq!(daily[0].play_duration_seconds, 120);
+    }
+
+    #[tokio::test]
+    async fn user_playback_groups_by_user_and_excludes_covered_and_unattributed_events() {
+        let pool = database::test_pool().await;
+        let repository = SqliteCatalogRepository::new(pool.clone());
+
+        sqlx::query("INSERT INTO playback_sources (id, provider) VALUES ('plex', 'tautulli')")
+            .execute(&pool)
+            .await
+            .expect("seed playback source");
+        sqlx::query(
+            r#"
+            INSERT INTO playback_legacy_snapshots (
+                source_id, content_type, content_id, play_count,
+                play_duration_seconds, covered_until
+            )
+            VALUES ('plex', 'movie', '42', 1, 60, '2024-01-15T00:00:00Z')
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("seed legacy snapshot");
+        // Alice: one covered event (excluded) and two live ones carrying an old
+        // and a new display name. Bob: one live event. Row 5 has no user.
+        sqlx::query(
+            r#"
+            INSERT INTO playback_events (
+                source_id, source_row_id, content_type, content_id,
+                played_at, duration_seconds, user_id, user_name
+            )
+            VALUES ('plex', 1, 'movie', '42', '2024-01-10T00:00:00Z', 60, 7, 'Alice'),
+                   ('plex', 2, 'movie', '42', '2024-01-20T00:00:00Z', 120, 7, 'Alice'),
+                   ('plex', 3, 'movie', '42', '2024-01-22T00:00:00Z', 30, 7, 'Alicia'),
+                   ('plex', 4, 'movie', '42', '2024-01-25T00:00:00Z', 90, 0, 'Local'),
+                   ('plex', 5, 'movie', '42', '2024-01-26T00:00:00Z', 45, NULL, NULL)
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("seed playback events");
+
+        let users = repository
+            .user_playback("movie", "42")
+            .await
+            .expect("load user playback");
+
+        assert_eq!(users.len(), 2);
+        // Alice leads with two live plays and reports her latest display name.
+        assert_eq!(users[0].user_id, 7);
+        assert_eq!(users[0].user_name.as_deref(), Some("Alicia"));
+        assert_eq!(users[0].playback.play_count, 2);
+        assert_eq!(users[0].playback.play_duration_seconds, 150);
+        assert_eq!(
+            users[0]
+                .playback
+                .last_played_at
+                .map(|played| played.to_rfc3339()),
+            Some("2024-01-22T00:00:00+00:00".to_owned())
+        );
+        assert_eq!(users[1].user_id, 0);
+        assert_eq!(users[1].user_name.as_deref(), Some("Local"));
+        assert_eq!(users[1].playback.play_count, 1);
     }
 }

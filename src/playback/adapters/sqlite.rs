@@ -140,24 +140,28 @@ impl PlaybackRepository for SqlitePlaybackRepository {
 
         // Accumulate individual sessions. Re-syncing a Tautulli row that we have
         // already stored is idempotent, so history survives Tautulli purges. The
-        // conflict update backfills season/episode positions onto rows stored
-        // before those columns existed, but never clears stored positions when
-        // Tautulli later omits the indices for the same row.
+        // conflict update backfills season/episode positions and the watching
+        // user onto rows stored before those columns existed, but never clears
+        // stored values when Tautulli later omits them for the same row. A
+        // re-sent user_name overwrites, so display names follow Plex renames.
         for event in &snapshot.events {
             sqlx::query(
                 r#"
                 INSERT INTO playback_events (
                     source_id, source_row_id, content_type, content_id,
-                    played_at, duration_seconds, season_number, episode_number
+                    played_at, duration_seconds, season_number, episode_number,
+                    user_id, user_name
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(source_id, source_row_id) DO UPDATE SET
                     content_type = excluded.content_type,
                     content_id = excluded.content_id,
                     played_at = excluded.played_at,
                     duration_seconds = excluded.duration_seconds,
                     season_number = COALESCE(excluded.season_number, season_number),
-                    episode_number = COALESCE(excluded.episode_number, episode_number)
+                    episode_number = COALESCE(excluded.episode_number, episode_number),
+                    user_id = COALESCE(excluded.user_id, user_id),
+                    user_name = COALESCE(excluded.user_name, user_name)
                 "#,
             )
             .bind(&source.id)
@@ -168,6 +172,8 @@ impl PlaybackRepository for SqlitePlaybackRepository {
             .bind(event.duration_seconds)
             .bind(event.season_number)
             .bind(event.episode_number)
+            .bind(event.user_id)
+            .bind(&event.user_name)
             .execute(&mut *transaction)
             .await?;
         }
@@ -401,6 +407,8 @@ mod tests {
             duration_seconds,
             season_number: None,
             episode_number: None,
+            user_id: None,
+            user_name: None,
         }
     }
 
@@ -722,6 +730,74 @@ mod tests {
             .await
             .expect("third store");
         assert_eq!(positions().await, (Some(1), Some(3)));
+    }
+
+    #[tokio::test]
+    async fn stores_users_backfills_renames_and_never_clears_on_resync() {
+        let pool = database::test_pool().await;
+        let repository = SqlitePlaybackRepository::new(pool.clone());
+        let source = source("plex");
+        repository
+            .reconcile_source(Some(&source))
+            .await
+            .expect("reconcile");
+
+        let user = || async {
+            sqlx::query_as::<_, (Option<i64>, Option<String>)>(
+                "SELECT user_id, user_name FROM playback_events WHERE source_row_id = 1",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("row 1")
+        };
+        let sync = |events: Vec<PlaybackEvent>| async {
+            let run = repository
+                .create_sync_run(&source, PlaybackSyncTrigger::Manual, Utc::now())
+                .await
+                .expect("create run");
+            repository
+                .store_events(
+                    run.id,
+                    &source,
+                    &snapshot(events),
+                    PlaybackSyncStatus::Succeeded,
+                    Utc::now(),
+                )
+                .await
+                .expect("store");
+        };
+
+        // First sync stores the row without a user (pre-migration shape).
+        sync(vec![event(1, ContentKey::Movie(1), 100, 60)]).await;
+        assert_eq!(user().await, (None, None));
+
+        // Re-syncing the same Tautulli row with a user backfills in place.
+        sync(vec![PlaybackEvent {
+            user_id: Some(7),
+            user_name: Some("Alice".to_owned()),
+            ..event(1, ContentKey::Movie(1), 100, 60)
+        }])
+        .await;
+        assert_eq!(user().await, (Some(7), Some("Alice".to_owned())));
+
+        // A rename in Plex re-sends every row with the new display name.
+        sync(vec![PlaybackEvent {
+            user_id: Some(7),
+            user_name: Some("Alicia".to_owned()),
+            ..event(1, ContentKey::Movie(1), 100, 60)
+        }])
+        .await;
+        assert_eq!(user().await, (Some(7), Some("Alicia".to_owned())));
+
+        // A later sync that omits the user must not clear the attribution.
+        sync(vec![event(1, ContentKey::Movie(1), 100, 60)]).await;
+        assert_eq!(user().await, (Some(7), Some("Alicia".to_owned())));
+
+        let event_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM playback_events")
+            .fetch_one(&pool)
+            .await
+            .expect("count events");
+        assert_eq!(event_count, 1);
     }
 
     #[tokio::test]

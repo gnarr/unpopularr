@@ -43,9 +43,10 @@ redirects so API keys cannot be forwarded to another host.
 
 The optional `[playback]` configuration supports one Tautulli source. Its
 `base_url` must also reach the API directly. Unpopularr periodically reads all
-history retained by Tautulli and stores only aggregate play count, duration,
-and last-played time by movie, series, or artist. It does not retain users,
-devices, IP addresses, or individual playback sessions.
+history retained by Tautulli and stores each playback session's timestamp,
+duration, position within a series, and watching user (Tautulli user id and
+display name), keyed by movie, series, or artist. It does not retain devices,
+IP addresses, or what was played beyond those fields.
 
 Tautulli can only report history recorded while it was installed and running.
 It cannot retroactively import older Plex playback history.

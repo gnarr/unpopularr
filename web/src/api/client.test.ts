@@ -38,6 +38,8 @@ describe('getSeries', () => {
       instanceDetails: [],
       playback: null,
       unattributedPlayCount: null,
+      userPlayback: [],
+      unknownUserPlayCount: null,
     }
     const fetchMock = stubFetch({ status: 200, ok: true, jsonImpl: () => Promise.resolve(details) })
 
@@ -67,6 +69,8 @@ describe('getMovie', () => {
       playback: null,
       availableAt: null,
       dailyPlayback: [],
+      userPlayback: [],
+      unknownUserPlayCount: null,
     }
     const fetchMock = stubFetch({ status: 200, ok: true, jsonImpl: () => Promise.resolve(details) })
 
@@ -96,6 +100,8 @@ describe('getArtist', () => {
       ],
       instanceDetails: [],
       playback: null,
+      userPlayback: [],
+      unknownUserPlayCount: null,
     }
     const fetchMock = stubFetch({ status: 200, ok: true, jsonImpl: () => Promise.resolve(details) })
 

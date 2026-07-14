@@ -18,9 +18,14 @@ test('shows size, file, and playback stats without an instance table', async ({ 
   await expect(page.getByText('Total size')).toBeVisible()
   await expect(page.getByText('2.4 KiB')).toBeVisible()
   await expect(page.getByText('Files')).toBeVisible()
-  await expect(page.getByText('Plays', { exact: true })).toBeVisible()
+  // "Plays" also names a column in the watched-by table; target the stat card.
+  await expect(page.getByText('Plays', { exact: true }).first()).toBeVisible()
   await expect(page.getByText('1h 30m')).toBeVisible()
   await expect(page.getByText('Last played')).toBeVisible()
+
+  // The per-user breakdown lists the single Tautulli watcher.
+  await expect(page.getByRole('heading', { name: 'Watched by' })).toBeVisible()
+  await expect(page.getByRole('cell', { name: 'Alice' })).toBeVisible()
 
   // A single-instance setup skips the per-instance breakdown.
   await expect(page.getByRole('heading', { name: 'Instances' })).toHaveCount(0)

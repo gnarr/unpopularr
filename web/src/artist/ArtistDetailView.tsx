@@ -7,6 +7,7 @@ import { DetailHeaderCard } from '../components/DetailHeaderCard'
 import { EmptyState } from '../components/EmptyState'
 import { InstanceTable } from '../components/InstanceTable'
 import { DetailSkeleton } from '../components/Skeletons'
+import { UserPlaybackTable } from '../components/UserPlaybackTable'
 import { formatBytes } from '../lib/format'
 
 export function ArtistDetailView() {
@@ -106,6 +107,8 @@ function ArtistDetail({ data }: { data: ArtistDetails }) {
           </div>
         )}
       </section>
+
+      <UserPlaybackTable users={data.userPlayback} unknownPlayCount={data.unknownUserPlayCount} />
 
       <InstanceTable
         extraHeader="Albums"

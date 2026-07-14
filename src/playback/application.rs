@@ -225,6 +225,8 @@ mod tests {
                         duration_seconds: 60,
                         season_number: None,
                         episode_number: None,
+                        user_id: None,
+                        user_name: None,
                     }],
                     matched_history_rows: 1,
                     unmatched_history_rows: 1,

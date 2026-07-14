@@ -74,6 +74,11 @@ pub struct PlaybackEvent {
     /// and for episode rows where the source omits the numbers.
     pub season_number: Option<i64>,
     pub episode_number: Option<i64>,
+    /// Watching user, when the source reports one. `user_id` is Tautulli's
+    /// stable per-user id (0 is the local Plex user); `user_name` is the
+    /// current display name at sync time.
+    pub user_id: Option<i64>,
+    pub user_name: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
