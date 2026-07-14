@@ -7,6 +7,7 @@ import { DetailHeaderCard } from '../components/DetailHeaderCard'
 import { EmptyState } from '../components/EmptyState'
 import { InstanceTable } from '../components/InstanceTable'
 import { DetailSkeleton } from '../components/Skeletons'
+import { UserPlaybackTable } from '../components/UserPlaybackTable'
 import { EpisodeLegend } from './EpisodeLegend'
 import { EpisodePlaybackStrip } from './EpisodePlaybackStrip'
 import { buildEpisodeStrip } from './episodeStrip'
@@ -103,6 +104,8 @@ function SeriesDetail({ data }: { data: SeriesDetails }) {
           </p>
         )}
       </section>
+
+      <UserPlaybackTable users={data.userPlayback} unknownPlayCount={data.unknownUserPlayCount} />
 
       <InstanceTable
         extraHeader="Seasons"

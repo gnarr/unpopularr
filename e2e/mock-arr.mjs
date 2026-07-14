@@ -78,15 +78,15 @@ const history = {
   recordsFiltered: 5,
   data: [
     // Watched episode with positions.
-    { media_type: 'episode', row_id: 1, grandparent_rating_key: 20, parent_media_index: 1, media_index: 1, play_duration: 1500, stopped: 1750000000 },
-    // Watched-then-deleted episode.
-    { media_type: 'episode', row_id: 2, grandparent_rating_key: 20, parent_media_index: 1, media_index: 3, play_duration: 1400, stopped: 1730000000 },
-    // Row without positions (pre-tracking shape) -> unattributed play.
+    { media_type: 'episode', row_id: 1, grandparent_rating_key: 20, parent_media_index: 1, media_index: 1, play_duration: 1500, stopped: 1750000000, user_id: 1, friendly_name: 'Alice' },
+    // Watched-then-deleted episode, watched by a second user.
+    { media_type: 'episode', row_id: 2, grandparent_rating_key: 20, parent_media_index: 1, media_index: 3, play_duration: 1400, stopped: 1730000000, user_id: 2, friendly_name: 'Bob' },
+    // Row without positions or user (pre-tracking shape) -> unattributed play.
     { media_type: 'episode', row_id: 3, grandparent_rating_key: 20, play_duration: 900, stopped: 1710000000 },
     // Movie plays match by the row's own rating key.
-    { media_type: 'movie', row_id: 4, rating_key: 30, play_duration: 5400, stopped: 1745000000 },
+    { media_type: 'movie', row_id: 4, rating_key: 30, play_duration: 5400, stopped: 1745000000, user_id: 1, friendly_name: 'Alice' },
     // Track plays roll up to the artist via the grandparent rating key.
-    { media_type: 'track', row_id: 5, grandparent_rating_key: 40, play_duration: 240, stopped: 1735000000 },
+    { media_type: 'track', row_id: 5, grandparent_rating_key: 40, play_duration: 240, stopped: 1735000000, user_id: 1, friendly_name: 'Alice' },
   ],
 }
 

@@ -66,6 +66,22 @@ pub struct DailyPlayback {
     pub play_duration_seconds: i64,
 }
 
+/// Read-time playback aggregate for one watching user of one item, computed
+/// from `playback_events` grouped by user. Rows arrive ordered by play count,
+/// then recency. Plays without a user (events stored before user tracking and
+/// since purged from Tautulli, plus legacy aggregates) are reported via
+/// `unknown_user_play_count` on the details structs instead.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserPlayback {
+    /// Tautulli's stable per-user id (0 is the local Plex user).
+    pub user_id: i64,
+    /// Display name from the user's most recent event; `None` when the source
+    /// never reported one.
+    pub user_name: Option<String>,
+    pub playback: PlaybackMetrics,
+}
+
 #[derive(Clone, Debug)]
 pub struct MovieSource {
     pub tmdb_id: i64,
@@ -145,6 +161,7 @@ pub struct SeriesDetailsSources {
     pub seasons: Vec<SeriesSeasonFiles>,
     pub episodes: Vec<SeriesEpisodeFile>,
     pub episode_playback: Vec<SeriesEpisodePlayback>,
+    pub user_playback: Vec<UserPlayback>,
     pub playback_available: bool,
     pub playback: Option<PlaybackMetrics>,
 }
@@ -157,6 +174,7 @@ pub struct MovieDetailsSources {
     /// Per-day playback totals, ascending by day. Empty when playback is
     /// unavailable or the movie has never been played.
     pub daily_playback: Vec<DailyPlayback>,
+    pub user_playback: Vec<UserPlayback>,
     pub playback_available: bool,
     pub playback: Option<PlaybackMetrics>,
 }
@@ -179,6 +197,7 @@ pub struct ArtistAlbumFile {
 pub struct ArtistDetailsSources {
     pub instances: Vec<ArtistSource>,
     pub albums: Vec<ArtistAlbumFile>,
+    pub user_playback: Vec<UserPlayback>,
     pub playback_available: bool,
     pub playback: Option<PlaybackMetrics>,
 }
@@ -235,6 +254,11 @@ pub struct SeriesDetails {
     /// aggregates, events without episode positions, and specials. `None` when
     /// playback is unavailable.
     pub unattributed_play_count: Option<i64>,
+    /// Per-user playback, most plays first. Empty when playback is unavailable.
+    pub user_playback: Vec<UserPlayback>,
+    /// Plays not attributable to a user: legacy aggregates and events stored
+    /// before user tracking. `None` when playback is unavailable.
+    pub unknown_user_play_count: Option<i64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -263,6 +287,11 @@ pub struct MovieDetails {
     pub available_at: Option<DateTime<Utc>>,
     /// Per-day playback totals, ascending by day.
     pub daily_playback: Vec<DailyPlayback>,
+    /// Per-user playback, most plays first. Empty when playback is unavailable.
+    pub user_playback: Vec<UserPlayback>,
+    /// Plays not attributable to a user: legacy aggregates and events stored
+    /// before user tracking. `None` when playback is unavailable.
+    pub unknown_user_play_count: Option<i64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -299,6 +328,11 @@ pub struct ArtistDetails {
     pub albums: Vec<ArtistAlbumDetail>,
     pub instance_details: Vec<ArtistInstanceDetail>,
     pub playback: Option<PlaybackMetrics>,
+    /// Per-user playback, most plays first. Empty when playback is unavailable.
+    pub user_playback: Vec<UserPlayback>,
+    /// Plays not attributable to a user: legacy aggregates and events stored
+    /// before user tracking. `None` when playback is unavailable.
+    pub unknown_user_play_count: Option<i64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -627,6 +661,8 @@ pub fn aggregate_series(mut sources: SeriesDetailsSources) -> Option<SeriesDetai
     let unattributed_play_count = playback
         .as_ref()
         .map(|metrics| (metrics.play_count - attributed_play_count).max(0));
+    let unknown_user_play_count =
+        unknown_user_play_count(playback.as_ref(), &sources.user_playback);
 
     Some(SeriesDetails {
         display_name,
@@ -639,6 +675,8 @@ pub fn aggregate_series(mut sources: SeriesDetailsSources) -> Option<SeriesDetai
         instance_details,
         playback,
         unattributed_play_count,
+        user_playback: sources.user_playback,
+        unknown_user_play_count,
     })
 }
 
@@ -682,6 +720,10 @@ pub fn aggregate_movie(mut sources: MovieDetailsSources) -> Option<MovieDetails>
         });
     }
 
+    let playback = playback_metrics(sources.playback_available, sources.playback.as_ref());
+    let unknown_user_play_count =
+        unknown_user_play_count(playback.as_ref(), &sources.user_playback);
+
     Some(MovieDetails {
         display_name,
         tmdb_id,
@@ -690,9 +732,11 @@ pub fn aggregate_movie(mut sources: MovieDetailsSources) -> Option<MovieDetails>
         file_count,
         instances,
         instance_details,
-        playback: playback_metrics(sources.playback_available, sources.playback.as_ref()),
+        playback,
         available_at,
         daily_playback: sources.daily_playback,
+        user_playback: sources.user_playback,
+        unknown_user_play_count,
     })
 }
 
@@ -761,6 +805,10 @@ pub fn aggregate_artist(mut sources: ArtistDetailsSources) -> Option<ArtistDetai
         .collect::<Vec<_>>();
     albums.sort_by_cached_key(|album| (album.title.to_lowercase(), album.music_brainz_id.clone()));
 
+    let playback = playback_metrics(sources.playback_available, sources.playback.as_ref());
+    let unknown_user_play_count =
+        unknown_user_play_count(playback.as_ref(), &sources.user_playback);
+
     Some(ArtistDetails {
         display_name,
         music_brainz_id,
@@ -769,7 +817,9 @@ pub fn aggregate_artist(mut sources: ArtistDetailsSources) -> Option<ArtistDetai
         instances,
         albums,
         instance_details,
-        playback: playback_metrics(sources.playback_available, sources.playback.as_ref()),
+        playback,
+        user_playback: sources.user_playback,
+        unknown_user_play_count,
     })
 }
 
@@ -784,6 +834,23 @@ fn playback_metrics(available: bool, metrics: Option<&PlaybackMetrics>) -> Optio
         metrics
             .cloned()
             .unwrap_or_else(PlaybackMetrics::never_played)
+    })
+}
+
+/// Plays in the item total that no user row accounts for: legacy aggregates
+/// and events stored before user tracking. The per-user query excludes
+/// legacy-covered events, so the subtraction is exact; the clamp only guards
+/// against inconsistent stored aggregates.
+fn unknown_user_play_count(
+    playback: Option<&PlaybackMetrics>,
+    user_playback: &[UserPlayback],
+) -> Option<i64> {
+    playback.map(|metrics| {
+        let attributed: i64 = user_playback
+            .iter()
+            .map(|user| user.playback.play_count)
+            .sum();
+        (metrics.play_count - attributed).max(0)
     })
 }
 
@@ -822,8 +889,8 @@ mod tests {
         ArtistAlbumFile, ArtistDetailsSources, ArtistSource, CatalogPlayback, CatalogSources,
         ContentItem, DailyPlayback, InstanceReference, MovieDetailsSources, MovieSource,
         PlaybackMetrics, SeriesDetailsSources, SeriesEpisodeFile, SeriesEpisodePlayback,
-        SeriesSeasonDetail, SeriesSeasonFiles, SeriesSource, aggregate, aggregate_artist,
-        aggregate_movie, aggregate_series,
+        SeriesSeasonDetail, SeriesSeasonFiles, SeriesSource, UserPlayback, aggregate,
+        aggregate_artist, aggregate_movie, aggregate_series,
     };
 
     fn instance(id: &str, name: &str) -> InstanceReference {
@@ -1435,6 +1502,53 @@ mod tests {
     }
 
     #[test]
+    fn movie_details_passes_user_playback_and_counts_unknown_users() {
+        let build = |playback_available, play_count, user_counts: Vec<i64>| {
+            aggregate_movie(MovieDetailsSources {
+                instances: vec![movie_source("Movie", 100, 1, instance("one", "One"), 0)],
+                user_playback: user_counts
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, count)| UserPlayback {
+                        user_id: i64::try_from(index).expect("small index"),
+                        user_name: Some(format!("User {index}")),
+                        playback: PlaybackMetrics {
+                            play_count: count,
+                            play_duration_seconds: 0,
+                            last_played_at: None,
+                        },
+                    })
+                    .collect(),
+                playback_available,
+                playback: Some(PlaybackMetrics {
+                    play_count,
+                    play_duration_seconds: 0,
+                    last_played_at: None,
+                }),
+                ..MovieDetailsSources::default()
+            })
+            .expect("movie details")
+        };
+
+        // Rows pass through; the remainder is the header total minus them.
+        let details = build(true, 7, vec![3, 2]);
+        assert_eq!(details.user_playback.len(), 2);
+        assert_eq!(
+            details.user_playback[0].user_name.as_deref(),
+            Some("User 0")
+        );
+        assert_eq!(details.unknown_user_play_count, Some(2));
+
+        // Fully attributed items report zero, and inconsistent stored
+        // aggregates clamp rather than going negative.
+        assert_eq!(build(true, 5, vec![3, 2]).unknown_user_play_count, Some(0));
+        assert_eq!(build(true, 4, vec![3, 2]).unknown_user_play_count, Some(0));
+
+        // Without a playback source there is nothing to report.
+        assert_eq!(build(false, 0, vec![]).unknown_user_play_count, None);
+    }
+
+    #[test]
     fn movie_details_takes_earliest_availability_and_passes_daily_playback() {
         let early = chrono::DateTime::from_timestamp(1_000, 0);
         let late = chrono::DateTime::from_timestamp(2_000, 0);
@@ -1464,7 +1578,7 @@ mod tests {
                 },
             ],
             playback_available: true,
-            playback: None,
+            ..MovieDetailsSources::default()
         })
         .expect("movie details");
 

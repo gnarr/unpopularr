@@ -798,18 +798,22 @@ mod tests {
         assert_eq!(details["seasons"][2]["seasonNumber"], 3);
         assert!(details["playback"].is_null());
         assert!(details["unattributedPlayCount"].is_null());
+        assert_eq!(details["userPlayback"], serde_json::json!([]));
+        assert!(details["unknownUserPlayCount"].is_null());
 
         insert_playback_snapshot(&pool, "series", "55", 9, 1200).await;
-        // One event carries its episode position, one predates position capture.
+        // One event carries its episode position and user, one predates both
+        // position and user capture.
         sqlx::query(
             r#"
             INSERT INTO playback_events (
                 source_id, source_row_id, content_type, content_id,
-                played_at, duration_seconds, season_number, episode_number
+                played_at, duration_seconds, season_number, episode_number,
+                user_id, user_name
             )
             VALUES
-                ('plex', 1, 'series', '55', ?1, 600, 1, 1),
-                ('plex', 2, 'series', '55', ?1, 300, NULL, NULL)
+                ('plex', 1, 'series', '55', ?1, 600, 1, 1, 7, 'Alice'),
+                ('plex', 2, 'series', '55', ?1, 300, NULL, NULL, NULL, NULL)
             "#,
         )
         .bind(chrono::Utc::now())
@@ -840,6 +844,15 @@ mod tests {
         assert_eq!(season["episodes"][1]["playback"]["playCount"], 0);
         // 9 series plays, 1 attributed to an episode cell.
         assert_eq!(details["unattributedPlayCount"], 8);
+        // Only the event carrying a user builds a row; the rest of the stored
+        // total is the unknown remainder.
+        let users = details["userPlayback"].as_array().expect("user playback");
+        assert_eq!(users.len(), 1);
+        assert_eq!(users[0]["userId"], 7);
+        assert_eq!(users[0]["userName"], "Alice");
+        assert_eq!(users[0]["playback"]["playCount"], 1);
+        assert_eq!(users[0]["playback"]["playDurationSeconds"], 600);
+        assert_eq!(details["unknownUserPlayCount"], 8);
     }
 
     fn utc(iso: &str) -> chrono::DateTime<chrono::Utc> {
@@ -995,25 +1008,34 @@ mod tests {
         .expect("insert movies");
 
         // A playback source makes playback available; two sessions on the same
-        // day (summed) plus one on a later day prove the per-day buckets.
+        // day (summed) plus one on a later day prove the per-day buckets. The
+        // first two carry a user, the third predates user capture.
         insert_playback_snapshot(&pool, "movie", "42", 3, 2100).await;
-        for (row_id, played_at, duration) in [
-            (1_i64, "2024-01-10T08:00:00Z", 600_i64),
-            (2, "2024-01-10T20:00:00Z", 300),
-            (3, "2024-03-05T00:00:00Z", 1200),
+        for (row_id, played_at, duration, user_id, user_name) in [
+            (
+                1_i64,
+                "2024-01-10T08:00:00Z",
+                600_i64,
+                Some(11),
+                Some("alice"),
+            ),
+            (2, "2024-01-10T20:00:00Z", 300, Some(11), Some("alice")),
+            (3, "2024-03-05T00:00:00Z", 1200, None, None),
         ] {
             sqlx::query(
                 r#"
                 INSERT INTO playback_events (
                     source_id, source_row_id, content_type, content_id,
-                    played_at, duration_seconds
+                    played_at, duration_seconds, user_id, user_name
                 )
-                VALUES ('plex', ?1, 'movie', '42', ?2, ?3)
+                VALUES ('plex', ?1, 'movie', '42', ?2, ?3, ?4, ?5)
                 "#,
             )
             .bind(row_id)
             .bind(utc(played_at))
             .bind(duration)
+            .bind(user_id)
+            .bind(user_name)
             .execute(&pool)
             .await
             .expect("insert playback event");
@@ -1040,6 +1062,23 @@ mod tests {
                 "playDurationSeconds": 1200,
             })
         );
+        // Alice's two attributed sessions build one row; the user-less third
+        // event lands in the unknown remainder (3 total - 2 attributed).
+        assert_eq!(
+            details["userPlayback"],
+            serde_json::json!([
+                {
+                    "userId": 11,
+                    "userName": "alice",
+                    "playback": {
+                        "playCount": 2,
+                        "playDurationSeconds": 900,
+                        "lastPlayedAt": "2024-01-10T20:00:00Z",
+                    },
+                },
+            ])
+        );
+        assert_eq!(details["unknownUserPlayCount"], 1);
     }
 
     #[tokio::test]
