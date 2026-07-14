@@ -2,6 +2,14 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [0.9.0](https://github.com/gnarr/unpopularr/compare/72c02ecf9f5dba62d32113086527a651374c0984..0.9.0) - 2026-07-14
+#### Features
+- (**playback**) track watching users - ([72c02ec](https://github.com/gnarr/unpopularr/commit/72c02ecf9f5dba62d32113086527a651374c0984)) - Gunnar Cortes
+#### Bug Fixes
+- (**playback**) show unattributed-only watch history - ([f640692](https://github.com/gnarr/unpopularr/commit/f64069265b1951617f3ea67d6a5e82ee3bbbcc59)) - Gunnar Cortes
+
+- - -
+
 ## [0.8.0](https://github.com/gnarr/unpopularr/compare/7c7d5dd563a4a10772fc776ef8ee65bb487f4e2e..0.8.0) - 2026-07-13
 #### Features
 - persist catalog settings - ([7c7d5dd](https://github.com/gnarr/unpopularr/commit/7c7d5dd563a4a10772fc776ef8ee65bb487f4e2e)) - Gunnar Cortes

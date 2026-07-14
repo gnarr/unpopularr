@@ -1,6 +1,6 @@
 [package]
 name = "unpopularr"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2024"
 rust-version = "1.94"
 description = "Self-hosted media library analytics backend"
