@@ -6,9 +6,9 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use futures::{StreamExt, stream};
+use futures::{StreamExt, TryStreamExt, stream};
 use reqwest::{
-    Client, Url,
+    Client, StatusCode, Url,
     header::{CONTENT_TYPE, LOCATION},
     redirect::Policy,
 };
@@ -74,25 +74,37 @@ impl TautulliClient {
         Ok(history)
     }
 
-    async fn metadata(&self, source: &PlaybackSource, rating_key: i64) -> Result<Metadata> {
-        self.get(
-            source,
-            &[
-                ("cmd", "get_metadata".to_owned()),
-                ("rating_key", rating_key.to_string()),
-            ],
-        )
-        .await
+    /// Looks up metadata for a rating_key. Tautulli returns HTTP 400 when a
+    /// rating_key can no longer be resolved (e.g. media Tautulli recorded
+    /// history for but Plex has since deleted); that specific, expected
+    /// response is reported as `Ok(None)` rather than an error. Any other
+    /// failure (connectivity, auth, malformed response, ...) still
+    /// propagates as `Err` so it isn't mistaken for a stale rating_key.
+    async fn metadata(&self, source: &PlaybackSource, rating_key: i64) -> Result<Option<Metadata>> {
+        let query = [
+            ("cmd", "get_metadata".to_owned()),
+            ("rating_key", rating_key.to_string()),
+        ];
+        let response = self.send(source, &query).await?;
+        if response.status() == StatusCode::BAD_REQUEST {
+            return Ok(None);
+        }
+        self.parse_response(response, &query).await.map(Some)
     }
 
     async fn get<T>(&self, source: &PlaybackSource, query: &[(&str, String)]) -> Result<T>
     where
         T: DeserializeOwned,
     {
-        let command = query
-            .iter()
-            .find_map(|(name, value)| (*name == "cmd").then_some(value.as_str()))
-            .unwrap_or("unknown command");
+        let response = self.send(source, query).await?;
+        self.parse_response(response, query).await
+    }
+
+    async fn send(
+        &self,
+        source: &PlaybackSource,
+        query: &[(&str, String)],
+    ) -> Result<reqwest::Response> {
         let url = endpoint(&source.base_url)?;
         let response = self
             .client
@@ -103,8 +115,7 @@ impl TautulliClient {
             .await
             .map_err(|error| request_error(&source.base_url, &error))?;
 
-        let status = response.status();
-        if status.is_redirection() {
+        if response.status().is_redirection() {
             let destination = response
                 .headers()
                 .get(LOCATION)
@@ -116,6 +127,23 @@ impl TautulliClient {
                 "Tautulli API request was redirected to {destination}; configure a direct URL or bypass the authentication proxy"
             );
         }
+        Ok(response)
+    }
+
+    async fn parse_response<T>(
+        &self,
+        response: reqwest::Response,
+        query: &[(&str, String)],
+    ) -> Result<T>
+    where
+        T: DeserializeOwned,
+    {
+        let command = query
+            .iter()
+            .find_map(|(name, value)| (*name == "cmd").then_some(value.as_str()))
+            .unwrap_or("unknown command");
+
+        let status = response.status();
         if !status.is_success() {
             bail!("Tautulli returned HTTP {}", status.as_u16());
         }
@@ -157,25 +185,25 @@ impl PlaybackSourceClient for TautulliClient {
             .collect::<HashSet<_>>();
         let metadata = stream::iter(lookup_keys)
             .map(|lookup_key| async move {
-                // A single unresolvable rating_key (e.g. media Tautulli
-                // recorded history for but Plex has since deleted) must not
-                // fail the whole sync; treat it as unmatched instead.
-                let content_key = match self.metadata(source, lookup_key.rating_key).await {
-                    Ok(metadata) => metadata.content_key(lookup_key.kind),
-                    Err(error) => {
+                // A stale rating_key (e.g. media Tautulli recorded history
+                // for but Plex has since deleted) is reported as `Ok(None)`
+                // and must not fail the whole sync; any other error (auth,
+                // connectivity, malformed response, ...) still propagates.
+                let content_key = match self.metadata(source, lookup_key.rating_key).await? {
+                    Some(metadata) => metadata.content_key(lookup_key.kind),
+                    None => {
                         warn!(
                             rating_key = lookup_key.rating_key,
-                            error = %error,
-                            "Tautulli metadata lookup failed; treating as unmatched"
+                            "Tautulli could not resolve rating_key; treating as unmatched"
                         );
                         None
                     }
                 };
-                (lookup_key, content_key)
+                Ok::<_, anyhow::Error>((lookup_key, content_key))
             })
             .buffer_unordered(MAX_CONCURRENT_METADATA_REQUESTS)
-            .collect::<HashMap<_, _>>()
-            .await;
+            .try_collect::<HashMap<_, _>>()
+            .await?;
 
         let mut events = Vec::new();
         let mut matched_history_rows = 0_i64;
@@ -801,6 +829,42 @@ mod tests {
         assert_eq!(snapshot.unmatched_history_rows, 1);
         assert_eq!(snapshot.events.len(), 1);
         assert_eq!(snapshot.events[0].key, ContentKey::Movie(42));
+    }
+
+    #[tokio::test]
+    async fn a_non_400_metadata_failure_still_fails_the_whole_sync() {
+        // Only HTTP 400 (a stale rating_key) is downgraded to "unmatched".
+        // Any other metadata failure (auth, server error, ...) is a real
+        // problem and must still abort the sync rather than being silently
+        // swallowed.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v2"))
+            .and(query_param("cmd", "get_history"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(envelope(serde_json::json!({
+                    "recordsFiltered": 1,
+                    "data": [
+                        {"media_type": "movie", "rating_key": 10, "row_id": 1, "stopped": 100}
+                    ]
+                }))),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v2"))
+            .and(query_param("cmd", "get_metadata"))
+            .and(query_param("rating_key", "10"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        let error = TautulliClient::new()
+            .expect("client")
+            .collect(&source(&server, ""))
+            .await
+            .expect_err("metadata server error");
+        assert!(error.to_string().contains("HTTP 500"));
     }
 
     #[tokio::test]
