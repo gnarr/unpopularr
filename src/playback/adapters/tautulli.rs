@@ -6,7 +6,7 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use futures::{StreamExt, TryStreamExt, stream};
+use futures::{StreamExt, stream};
 use reqwest::{
     Client, Url,
     header::{CONTENT_TYPE, LOCATION},
@@ -14,6 +14,7 @@ use reqwest::{
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer};
+use tracing::warn;
 
 use crate::playback::{
     ContentKey, PlaybackEvent, PlaybackSnapshot, PlaybackSource, PlaybackSourceClient,
@@ -156,12 +157,25 @@ impl PlaybackSourceClient for TautulliClient {
             .collect::<HashSet<_>>();
         let metadata = stream::iter(lookup_keys)
             .map(|lookup_key| async move {
-                let metadata = self.metadata(source, lookup_key.rating_key).await?;
-                Ok::<_, anyhow::Error>((lookup_key, metadata.content_key(lookup_key.kind)))
+                // A single unresolvable rating_key (e.g. media Tautulli
+                // recorded history for but Plex has since deleted) must not
+                // fail the whole sync; treat it as unmatched instead.
+                let content_key = match self.metadata(source, lookup_key.rating_key).await {
+                    Ok(metadata) => metadata.content_key(lookup_key.kind),
+                    Err(error) => {
+                        warn!(
+                            rating_key = lookup_key.rating_key,
+                            error = %error,
+                            "Tautulli metadata lookup failed; treating as unmatched"
+                        );
+                        None
+                    }
+                };
+                (lookup_key, content_key)
             })
             .buffer_unordered(MAX_CONCURRENT_METADATA_REQUESTS)
-            .try_collect::<HashMap<_, _>>()
-            .await?;
+            .collect::<HashMap<_, _>>()
+            .await;
 
         let mut events = Vec::new();
         let mut matched_history_rows = 0_i64;
@@ -738,6 +752,55 @@ mod tests {
             .expect("snapshot");
         assert_eq!(snapshot.matched_history_rows, 0);
         assert_eq!(snapshot.unmatched_history_rows, 2);
+    }
+
+    #[tokio::test]
+    async fn a_failed_metadata_lookup_is_unmatched_instead_of_failing_the_whole_sync() {
+        // Tautulli returns HTTP 400 from get_metadata for a rating_key it can
+        // no longer resolve (e.g. media deleted from Plex but still present
+        // in playback history). That single failure must not abort the sync.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v2"))
+            .and(query_param("cmd", "get_history"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(envelope(serde_json::json!({
+                    "recordsFiltered": 2,
+                    "data": [
+                        {"media_type": "movie", "rating_key": 10, "row_id": 1, "stopped": 100},
+                        {"media_type": "movie", "rating_key": 20, "row_id": 2, "stopped": 200}
+                    ]
+                }))),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v2"))
+            .and(query_param("cmd", "get_metadata"))
+            .and(query_param("rating_key", "10"))
+            .respond_with(ResponseTemplate::new(400))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v2"))
+            .and(query_param("cmd", "get_metadata"))
+            .and(query_param("rating_key", "20"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(envelope(serde_json::json!({"guids": ["tmdb://42"]}))),
+            )
+            .mount(&server)
+            .await;
+
+        let snapshot = TautulliClient::new()
+            .expect("client")
+            .collect(&source(&server, ""))
+            .await
+            .expect("snapshot");
+        assert_eq!(snapshot.matched_history_rows, 1);
+        assert_eq!(snapshot.unmatched_history_rows, 1);
+        assert_eq!(snapshot.events.len(), 1);
+        assert_eq!(snapshot.events[0].key, ContentKey::Movie(42));
     }
 
     #[tokio::test]
