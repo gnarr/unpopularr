@@ -2,6 +2,13 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [0.9.1](https://github.com/gnarr/unpopularr/compare/6a56f6aa7f5aa3b549016399120c860011e109fe..0.9.1) - 2026-09-22
+#### Bug Fixes
+- (**playback**) only treat Tautulli HTTP 400 as an unresolvable rating_key - ([0acffd2](https://github.com/gnarr/unpopularr/commit/0acffd2903be76668fed8cb69b182aec32967161)) - Gunnar Cortes
+- (**playback**) don't abort sync on a single Tautulli metadata lookup failure - ([6a56f6a](https://github.com/gnarr/unpopularr/commit/6a56f6aa7f5aa3b549016399120c860011e109fe)) - Gunnar Cortes
+
+- - -
+
 ## [0.9.0](https://github.com/gnarr/unpopularr/compare/72c02ecf9f5dba62d32113086527a651374c0984..0.9.0) - 2026-07-14
 #### Features
 - (**playback**) track watching users - ([72c02ec](https://github.com/gnarr/unpopularr/commit/72c02ecf9f5dba62d32113086527a651374c0984)) - Gunnar Cortes
