@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [0.10.0](https://github.com/gnarr/unpopularr/compare/0b94dd2db5c64c49748a69de997730ccd60e1250..0.10.0) - 2026-09-28
+#### Features
+- add media age - ([0b94dd2](https://github.com/gnarr/unpopularr/commit/0b94dd2db5c64c49748a69de997730ccd60e1250)) - Gunnar Cortes
+
+- - -
+
 ## [0.9.1](https://github.com/gnarr/unpopularr/compare/6a56f6aa7f5aa3b549016399120c860011e109fe..0.9.1) - 2026-09-22
 #### Bug Fixes
 - (**playback**) only treat Tautulli HTTP 400 as an unresolvable rating_key - ([0acffd2](https://github.com/gnarr/unpopularr/commit/0acffd2903be76668fed8cb69b182aec32967161)) - Gunnar Cortes
