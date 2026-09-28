@@ -51,6 +51,61 @@ IP addresses, or what was played beyond those fields.
 Tautulli can only report history recorded while it was installed and running.
 It cannot retroactively import older Plex playback history.
 
+### Media age
+
+Every item carries an age: how long it has been in your library, taken as the
+oldest of every date the sources report — Radarr's `added` and its movie file's
+`dateAdded`, Sonarr's `series.added` and each episode file's `dateAdded`, and
+Lidarr's artist and album dates. A series ages from its oldest episode file, an
+artist from its oldest album. Release and air dates are deliberately excluded:
+they measure the content's age, not the library's.
+
+The optional `[media_probe]` section adds one more source, the files themselves.
+The *arr apps only know when *they* learned about a file, so rebuilding a Sonarr
+database makes every series look days old; reading the file's own timestamps
+recovers the real date. This is off by default because it needs filesystem
+access unpopularr otherwise never has.
+
+Mount your media **read-only** — the probe only stats files, it never opens or
+writes them:
+
+```sh
+docker run \
+  -v /srv/appdata/unpopularr:/app/data \
+  -v /srv/media:/media:ro \
+  ghcr.io/gnarr/unpopularr
+```
+
+or in compose, `- /srv/media:/media:ro`.
+
+Then map the paths. The `from` prefix is the path as the *arr app reports it
+(what its own UI shows under a movie or series), not what unpopularr sees:
+
+```toml
+[media_probe]
+path_mappings = [
+  { from = "/data/media/movies", to = "/media/movies" },
+  { from = "/data/media/tv", to = "/media/tv" },
+]
+```
+
+Omit `path_mappings` entirely when unpopularr already sees media at the same
+paths the *arr apps use. The longest matching prefix wins, so declaration order
+does not matter.
+
+Two things to know:
+
+- The image runs as uid/gid 10001, and stat requires execute permission on
+  every parent directory. Either make the media tree traversable by that uid or
+  run with `--user $(id -u):$(id -g)`.
+- Music ages are folder-granular: Lidarr artists are probed at the folder, not
+  per track file, which would cost an extra API request per artist.
+
+Anything unreadable simply contributes no hint; the probe never fails a sync.
+It logs one line per instance per sync, and warns when no path matched a
+mapping rule or no file could be read — the usual sign of a wrong prefix or a
+missing mount.
+
 ## Web UI
 
 The binary also serves a small web UI at the same address as the API. Open the

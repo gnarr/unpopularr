@@ -60,6 +60,7 @@ function MovieDetail({ data }: { data: MovieDetails }) {
         instances={data.instances}
         sizeOnDiskBytes={data.sizeOnDiskBytes}
         fileCount={data.fileCount}
+        addedAt={data.addedAt}
         playback={data.playback}
       />
 
@@ -69,7 +70,7 @@ function MovieDetail({ data }: { data: MovieDetails }) {
             <h2 className="text-sm font-semibold text-slate-100">Minutes played</h2>
           </header>
           <div className="p-4">
-            <MoviePlaybackChart dailyPlayback={data.dailyPlayback} availableAt={data.availableAt} />
+            <MoviePlaybackChart dailyPlayback={data.dailyPlayback} addedAt={data.addedAt} />
           </div>
         </section>
       )}

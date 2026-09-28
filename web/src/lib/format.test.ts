@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatBytes, formatDuration, relativeTime } from './format'
+import { formatAge, formatBytes, formatDuration, relativeTime } from './format'
 
 describe('formatBytes', () => {
   it('handles zero and negatives', () => {
@@ -36,5 +36,25 @@ describe('relativeTime', () => {
 
   it('returns a dash for invalid input', () => {
     expect(relativeTime('not-a-date', now)).toBe('—')
+  })
+})
+
+describe('formatAge', () => {
+  const now = new Date('2026-06-25T12:00:00Z').getTime()
+
+  it('picks the largest whole unit that fits', () => {
+    expect(formatAge('2026-06-25T08:00:00Z', now)).toBe('4h')
+    expect(formatAge('2026-06-07T12:00:00Z', now)).toBe('18d')
+    expect(formatAge('2025-11-25T12:00:00Z', now)).toBe('7mo')
+    expect(formatAge('2024-06-25T12:00:00Z', now)).toBe('2y')
+  })
+
+  it('never reports a negative age', () => {
+    // Clock skew, or an *arr reporting a date in the future.
+    expect(formatAge('2026-06-30T12:00:00Z', now)).toBe('0d')
+  })
+
+  it('returns a dash for invalid input', () => {
+    expect(formatAge('not-a-date', now)).toBe('—')
   })
 })

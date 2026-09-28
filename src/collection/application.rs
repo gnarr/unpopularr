@@ -11,7 +11,7 @@ use crate::{
     instances::Instance,
 };
 
-use super::adapters::arr::ArrClient;
+use super::adapters::{arr::ArrClient, files::FileProbe};
 
 const MAX_CONCURRENT_INSTANCE_SYNCS: usize = 4;
 
@@ -20,6 +20,8 @@ pub struct SyncService {
     repository: Arc<dyn CollectionRepository>,
     client: ArrClient,
     instances: Arc<Vec<Instance>>,
+    /// Present only when `[media_probe]` is configured.
+    probe: Option<Arc<FileProbe>>,
     sync_lock: Arc<Mutex<()>>,
 }
 
@@ -33,11 +35,13 @@ impl SyncService {
         repository: Arc<dyn CollectionRepository>,
         client: ArrClient,
         instances: Arc<Vec<Instance>>,
+        probe: Option<Arc<FileProbe>>,
     ) -> Self {
         Self {
             repository,
             client,
             instances,
+            probe,
             sync_lock: Arc::new(Mutex::new(())),
         }
     }
@@ -77,7 +81,10 @@ impl SyncService {
                 async move {
                     let completed_at;
                     match service.client.collect(&instance).await {
-                        Ok(snapshot) => {
+                        Ok(mut snapshot) => {
+                            if let Some(probe) = &service.probe {
+                                probe.apply(&instance.id, &mut snapshot).await;
+                            }
                             completed_at = Utc::now();
                             let item_count = snapshot.item_count();
                             if let Err(error) = service

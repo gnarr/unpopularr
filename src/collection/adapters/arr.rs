@@ -14,7 +14,7 @@ use serde::de::DeserializeOwned;
 use crate::{
     collection::{
         ArtistAlbumSnapshot, ArtistSnapshot, MovieSnapshot, SeriesEpisodeSnapshot,
-        SeriesSeasonSnapshot, SeriesSnapshot, Snapshot,
+        SeriesSeasonSnapshot, SeriesSnapshot, Snapshot, earliest,
     },
     instances::{Instance, InstanceKind},
 };
@@ -55,6 +55,7 @@ impl ArrClient {
                 .into_iter()
                 .map(|movie| {
                     let statistics = movie.statistics.unwrap_or_default();
+                    let file = movie.movie_file.unwrap_or_default();
                     MovieSnapshot {
                         tmdb_id: movie.tmdb_id,
                         title: movie.title,
@@ -72,7 +73,8 @@ impl ArrClient {
                                 }
                             },
                         )),
-                        added_at: movie.added,
+                        added_at: earliest(movie.added, file.date_added),
+                        file_path: file.path,
                     }
                 })
                 .collect(),
@@ -133,6 +135,13 @@ impl ArrClient {
                         })
                         .collect();
 
+                    // Rolled up from the snapshots rather than the raw response
+                    // so specials, which `episode_snapshots` drops, cannot age
+                    // a series the way they do not count towards its size.
+                    let episodes = episode_snapshots(episodes);
+                    let oldest_episode =
+                        episodes.iter().filter_map(|episode| episode.added_at).min();
+
                     SeriesSnapshot {
                         tvdb_id: series.tvdb_id,
                         title: series.title,
@@ -140,8 +149,9 @@ impl ArrClient {
                         year: series.year,
                         size_on_disk_bytes: non_negative(statistics.size_on_disk.unwrap_or(0)),
                         file_count: non_negative(statistics.episode_file_count.unwrap_or(0)),
+                        added_at: earliest(series.added, oldest_episode),
                         seasons,
-                        episodes: episode_snapshots(episodes),
+                        episodes,
                     }
                 })
                 .collect(),
@@ -168,6 +178,7 @@ impl ArrClient {
                         title: album.title,
                         size_on_disk_bytes: non_negative(statistics.size_on_disk.unwrap_or(0)),
                         file_count,
+                        added_at: album.added,
                     });
             }
         }
@@ -176,12 +187,16 @@ impl ArrClient {
             .into_iter()
             .map(|artist| {
                 let statistics = artist.statistics.unwrap_or_default();
+                let albums = albums_by_artist.remove(&artist.id).unwrap_or_default();
+                let oldest_album = albums.iter().filter_map(|album| album.added_at).min();
                 Ok(ArtistSnapshot {
                     musicbrainz_id: normalize_musicbrainz_id(&artist.foreign_artist_id, "artist")?,
                     name: artist.artist_name,
                     size_on_disk_bytes: non_negative(statistics.size_on_disk.unwrap_or(0)),
                     file_count: non_negative(statistics.track_file_count.unwrap_or(0)),
-                    albums: albums_by_artist.remove(&artist.id).unwrap_or_default(),
+                    added_at: earliest(artist.added, oldest_album),
+                    path: artist.path,
+                    albums,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -262,6 +277,7 @@ fn episode_snapshots(episodes: Vec<SonarrEpisode>) -> Vec<SeriesEpisodeSnapshot>
         .into_iter()
         .filter(|episode| episode.season_number > 0 && episode.episode_number >= 0)
         .map(|episode| {
+            let file = episode.episode_file.unwrap_or_default();
             (
                 (episode.season_number, episode.episode_number),
                 SeriesEpisodeSnapshot {
@@ -270,9 +286,9 @@ fn episode_snapshots(episodes: Vec<SonarrEpisode>) -> Vec<SeriesEpisodeSnapshot>
                     title: episode.title,
                     air_date_utc: episode.air_date_utc,
                     has_file: episode.has_file,
-                    size_on_disk_bytes: non_negative(
-                        episode.episode_file.and_then(|file| file.size).unwrap_or(0),
-                    ),
+                    size_on_disk_bytes: non_negative(file.size.unwrap_or(0)),
+                    added_at: file.date_added,
+                    file_path: file.path,
                 },
             )
         })
@@ -306,7 +322,19 @@ struct RadarrMovie {
     /// When the movie was added to Radarr's library. Radarr always sends this
     /// for library movies, but treat it as optional to tolerate older APIs.
     added: Option<DateTime<Utc>>,
+    /// Embedded in the library response for movies that have a file. Older
+    /// Radarr releases omit it, which costs a hint rather than the sync.
+    movie_file: Option<RadarrMovieFile>,
     statistics: Option<RadarrStatistics>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RadarrMovieFile {
+    /// When Radarr imported the file, which predates `added` whenever a movie
+    /// was removed from the library and re-added over existing files.
+    date_added: Option<DateTime<Utc>>,
+    path: Option<String>,
 }
 
 #[derive(Default, Deserialize)]
@@ -329,6 +357,8 @@ struct SonarrSeries {
     title_slug: String,
     #[serde(default)]
     year: i64,
+    /// When the series was added to Sonarr's library.
+    added: Option<DateTime<Utc>>,
     #[serde(default)]
     seasons: Vec<SonarrSeason>,
     statistics: Option<SonarrStatistics>,
@@ -367,10 +397,14 @@ struct SonarrEpisode {
     episode_file: Option<SonarrEpisodeFile>,
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SonarrEpisodeFile {
     size: Option<i64>,
+    /// When Sonarr imported the file. Embedded in the episode response because
+    /// the request already asks for `includeEpisodeFile`.
+    date_added: Option<DateTime<Utc>>,
+    path: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -379,6 +413,10 @@ struct LidarrArtist {
     id: i64,
     artist_name: String,
     foreign_artist_id: String,
+    /// When the artist was added to Lidarr's library.
+    added: Option<DateTime<Utc>>,
+    /// Lidarr's path to the artist folder, for the filesystem probe.
+    path: Option<String>,
     statistics: Option<LidarrArtistStatistics>,
 }
 
@@ -396,6 +434,8 @@ struct LidarrAlbum {
     foreign_album_id: String,
     #[serde(default)]
     title: String,
+    /// When the album was added to Lidarr's library.
+    added: Option<DateTime<Utc>>,
     statistics: Option<LidarrAlbumStatistics>,
 }
 
@@ -444,6 +484,7 @@ mod tests {
                     "titleSlug": "movie-42",
                     "year": 2024,
                     "added": "2024-03-15T10:00:00Z",
+                    "movieFile": {"dateAdded": "2021-07-04T08:00:00Z"},
                     "statistics": {"movieFileCount": 2, "sizeOnDisk": 1234}
                 }])),
             )
@@ -463,9 +504,10 @@ mod tests {
         assert_eq!(movies[0].title_slug, "movie-42");
         assert_eq!(movies[0].file_count, 2);
         assert_eq!(movies[0].size_on_disk_bytes, 1234);
+        // The file predates the library entry, so it sets the acquisition date.
         assert_eq!(
             movies[0].added_at.map(|added| added.to_rfc3339()),
-            Some("2024-03-15T10:00:00+00:00".to_owned())
+            Some("2021-07-04T08:00:00+00:00".to_owned())
         );
     }
 
@@ -482,6 +524,7 @@ mod tests {
                     "title": "Series",
                     "titleSlug": "series-slug",
                     "year": 2020,
+                    "added": "2023-05-01T00:00:00Z",
                     "statistics": {"episodeFileCount": 4, "sizeOnDisk": 800},
                     "seasons": [
                         {"seasonNumber": 0, "statistics": {"episodeFileCount": 1}},
@@ -503,7 +546,7 @@ mod tests {
                     "episodeNumber": 1,
                     "title": "Special",
                     "hasFile": true,
-                    "episodeFile": {"size": 100}
+                    "episodeFile": {"size": 100, "dateAdded": "2015-01-01T00:00:00Z"}
                 },
                 {
                     "seasonNumber": 1,
@@ -518,7 +561,7 @@ mod tests {
                     "title": "On disk",
                     "airDateUtc": "2020-01-01T02:00:00Z",
                     "hasFile": true,
-                    "episodeFile": {"size": 512}
+                    "episodeFile": {"size": 512, "dateAdded": "2021-02-03T00:00:00Z"}
                 },
                 {
                     "seasonNumber": 2,
@@ -560,6 +603,60 @@ mod tests {
         // Unaired (no air date yet) episodes are retained.
         assert_eq!(episodes[2].season_number, 2);
         assert_eq!(episodes[2].air_date_utc, None);
+
+        // The series ages from its oldest episode file, which is older than the
+        // Sonarr library date. The special's even older file is excluded, the
+        // same way it is excluded from the season list.
+        assert_eq!(
+            episodes[0].added_at.map(|added| added.to_rfc3339()),
+            Some("2021-02-03T00:00:00+00:00".to_owned())
+        );
+        assert_eq!(episodes[1].added_at, None);
+        assert_eq!(
+            series[0].added_at.map(|added| added.to_rfc3339()),
+            Some("2021-02-03T00:00:00+00:00".to_owned())
+        );
+    }
+
+    #[tokio::test]
+    async fn reports_no_sonarr_acquisition_date_without_files_or_a_library_date() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v3/series"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!([{
+                    "id": 9,
+                    "tvdbId": 7,
+                    "title": "Series",
+                    "titleSlug": "series-slug",
+                    "year": 2020
+                }])),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v3/episode"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!([{
+                    "seasonNumber": 1,
+                    "episodeNumber": 1,
+                    "title": "Unaired",
+                    "hasFile": false
+                }])),
+            )
+            .mount(&server)
+            .await;
+
+        let snapshot = ArrClient::new()
+            .expect("client")
+            .collect(&instance(&server, InstanceKind::Sonarr, ""))
+            .await
+            .expect("snapshot");
+
+        let Snapshot::Series(series) = snapshot else {
+            panic!("expected series");
+        };
+        assert_eq!(series[0].added_at, None);
     }
 
     #[tokio::test]
@@ -572,6 +669,8 @@ mod tests {
                     "id": 3,
                     "artistName": "Artist",
                     "foreignArtistId": "ARTIST-ID",
+                    "added": "2022-09-01T00:00:00Z",
+                    "path": "/music/Artist",
                     "statistics": {"trackFileCount": 5, "sizeOnDisk": 1000}
                 }])),
             )
@@ -584,6 +683,7 @@ mod tests {
                     "artistId": 3,
                     "foreignAlbumId": "ALBUM-ONE",
                     "title": "Album One",
+                    "added": "2019-11-20T00:00:00Z",
                     "statistics": {"trackFileCount": 5, "sizeOnDisk": 800}
                 },
                 {
@@ -609,6 +709,11 @@ mod tests {
         assert_eq!(artists[0].albums[0].musicbrainz_id, "album-one");
         assert_eq!(artists[0].albums[0].title, "Album One");
         assert_eq!(artists[0].albums[0].size_on_disk_bytes, 800);
+        // The album predates the artist entry, so it sets the acquisition date.
+        assert_eq!(
+            artists[0].added_at.map(|added| added.to_rfc3339()),
+            Some("2019-11-20T00:00:00+00:00".to_owned())
+        );
     }
 
     #[tokio::test]

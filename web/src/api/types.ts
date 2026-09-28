@@ -43,6 +43,9 @@ interface ContentBase {
   sizeOnDiskBytes: number
   fileCount: number
   instances: InstanceReference[]
+  // Oldest acquisition date across instances — when this first landed in the
+  // library. `null` until a re-sync populates it, or when nothing reports one.
+  addedAt: string | null
   // `null` means playback is unavailable (no provider configured, or no sync yet).
   // When available, never-played content has playCount 0 and lastPlayedAt null.
   playback: PlaybackMetrics | null
@@ -79,6 +82,8 @@ export interface SeriesEpisodeDetail {
   airDateUtc: string | null
   hasFile: boolean
   sizeOnDiskBytes: number
+  // When this episode's file was acquired, earliest across instances.
+  addedAt: string | null
   playback: PlaybackMetrics | null
 }
 
@@ -108,6 +113,9 @@ export interface SeriesDetails {
   sizeOnDiskBytes: number
   fileCount: number
   instances: InstanceReference[]
+  // Oldest acquisition date across instances — the age of the oldest episode
+  // file, or of the series itself when no episode reports one.
+  addedAt: string | null
   seasons: SeriesSeasonDetail[]
   instanceDetails: SeriesInstanceDetail[]
   playback: PlaybackMetrics | null
@@ -138,9 +146,9 @@ export interface MovieDetails {
   instances: InstanceReference[]
   instanceDetails: MovieInstanceDetail[]
   playback: PlaybackMetrics | null
-  // Earliest Radarr "added" date across instances — the plot's left edge.
+  // Oldest acquisition date across instances, and the plot's left edge.
   // `null` until a re-sync populates it (fall back to the first played day).
-  availableAt: string | null
+  addedAt: string | null
   // Per-day playback totals, ascending by day.
   dailyPlayback: DailyPlayback[]
   // Per-user playback, most plays first. Empty when playback is unavailable.
@@ -174,6 +182,9 @@ export interface ArtistDetails {
   sizeOnDiskBytes: number
   fileCount: number
   instances: InstanceReference[]
+  // Oldest acquisition date across instances — the age of the oldest album, or
+  // of the artist itself when no album reports one.
+  addedAt: string | null
   albums: ArtistAlbumDetail[]
   instanceDetails: ArtistInstanceDetail[]
   playback: PlaybackMetrics | null

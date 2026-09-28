@@ -59,6 +59,7 @@ function ArtistDetail({ data }: { data: ArtistDetails }) {
         instances={data.instances}
         sizeOnDiskBytes={data.sizeOnDiskBytes}
         fileCount={data.fileCount}
+        addedAt={data.addedAt}
         playback={data.playback}
       />
 

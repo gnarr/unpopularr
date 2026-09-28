@@ -24,6 +24,7 @@ describe('getSeries', () => {
       sizeOnDiskBytes: 200,
       fileCount: 60,
       instances: [],
+      addedAt: null,
       seasons: [
         {
           seasonNumber: 1,
@@ -67,7 +68,7 @@ describe('getMovie', () => {
       instances: [],
       instanceDetails: [],
       playback: null,
-      availableAt: null,
+      addedAt: null,
       dailyPlayback: [],
       userPlayback: [],
       unknownUserPlayCount: null,
@@ -95,6 +96,7 @@ describe('getArtist', () => {
       sizeOnDiskBytes: 300,
       fileCount: 40,
       instances: [],
+      addedAt: null,
       albums: [
         { musicBrainzId: 'album-1', title: 'Album', sizeOnDiskBytes: 300, fileCount: 40 },
       ],

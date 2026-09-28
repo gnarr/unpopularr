@@ -16,6 +16,7 @@ function movie(overrides: Partial<MovieItem> = {}): MovieItem {
         deepLinkPath: 'movie/the-matrix-603',
       },
     ],
+    addedAt: null,
     playback: null,
     tmdbId: 603,
     year: 1999,

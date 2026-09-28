@@ -45,11 +45,11 @@ const MONTH_NAMES = [
 ]
 
 // Build a continuous axis at the chosen resolution, from the movie's
-// availability (or its first played bucket, before a re-sync fills `availableAt`)
+// availability (or its first played bucket, before a re-sync fills `addedAt`)
 // through the current bucket, filling empty buckets with zero-height bars.
 export function buildMoviePlaybackChart(
   dailyPlayback: DailyPlayback[],
-  availableAt: string | null,
+  addedAt: string | null,
   resolution: Resolution = 'month',
   now: number = Date.now(),
 ): MoviePlaybackChart {
@@ -71,8 +71,8 @@ export function buildMoviePlaybackChart(
     if (earliestPlayed === null || start < earliestPlayed) earliestPlayed = start
   }
 
-  const availableStart = availableAt ? bucketStart(new Date(availableAt), resolution) : null
-  const anchors = [availableStart, earliestPlayed].filter((date): date is Date => date !== null)
+  const addedStart = addedAt ? bucketStart(new Date(addedAt), resolution) : null
+  const anchors = [addedStart, earliestPlayed].filter((date): date is Date => date !== null)
   if (anchors.length === 0) return { bars: [], hasData: false }
 
   const end = bucketStart(new Date(now), resolution)

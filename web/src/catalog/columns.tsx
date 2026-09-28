@@ -2,7 +2,7 @@ import { createColumnHelper, type ColumnDef, type RowData } from '@tanstack/reac
 import { Link } from 'react-router'
 import type { ContentItem } from '../api/types'
 import { detailCount, detailLabel, detailPath, isNeverPlayed, year } from '../lib/content'
-import { absoluteTime, formatBytes, formatDuration, relativeTime } from '../lib/format'
+import { absoluteTime, formatAge, formatBytes, formatDuration, relativeTime } from '../lib/format'
 import { TypeBadge } from '../components/TypeBadge'
 import { InstanceChips } from '../components/InstanceChips'
 
@@ -60,6 +60,26 @@ export function buildColumns(hasPlayback: boolean): Array<ColumnDef<ContentItem,
       cell: (ctx) => <span className="text-slate-400">{detailLabel(ctx.row.original)}</span>,
       meta: { align: 'right' },
     }),
+    // The accessor is elapsed time, not the timestamp, so that sorting
+    // descending under a header reading "Age" puts the oldest items first.
+    helper.accessor(
+      (item) => (item.addedAt === null ? undefined : Date.now() - new Date(item.addedAt).getTime()),
+      {
+        id: 'addedAt',
+        header: 'Age',
+        sortUndefined: 'last',
+        meta: { align: 'right' },
+        cell: (ctx) => {
+          const { addedAt } = ctx.row.original
+          if (addedAt === null) return <span className="text-slate-600">—</span>
+          return (
+            <span className="tabular-nums" title={absoluteTime(addedAt)}>
+              {formatAge(addedAt)}
+            </span>
+          )
+        },
+      },
+    ),
     helper.display({
       id: 'instances',
       header: 'Instances',

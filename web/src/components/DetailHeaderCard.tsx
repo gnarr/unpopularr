@@ -12,6 +12,8 @@ interface DetailHeaderCardProps {
   instances: InstanceReference[]
   sizeOnDiskBytes: number
   fileCount: number
+  // Oldest acquisition date across instances; null when nothing reports one.
+  addedAt: string | null
   playback: PlaybackMetrics | null
 }
 
@@ -22,6 +24,7 @@ export function DetailHeaderCard({
   instances,
   sizeOnDiskBytes,
   fileCount,
+  addedAt,
   playback,
 }: DetailHeaderCardProps) {
   const neverPlayed = playback !== null && playback.playCount === 0
@@ -54,12 +57,24 @@ export function DetailHeaderCard({
           </>
         )}
       </div>
-      {playback?.lastPlayedAt && (
-        <div className="border-t border-slate-800 px-4 py-2 text-sm text-slate-400">
-          Last played{' '}
-          <span className="text-slate-200" title={absoluteTime(playback.lastPlayedAt)}>
-            {relativeTime(playback.lastPlayedAt)}
-          </span>
+      {(addedAt !== null || playback?.lastPlayedAt) && (
+        <div className="flex flex-wrap gap-x-4 border-t border-slate-800 px-4 py-2 text-sm text-slate-400">
+          {addedAt !== null && (
+            <span>
+              Added{' '}
+              <span className="text-slate-200" title={absoluteTime(addedAt)}>
+                {relativeTime(addedAt)}
+              </span>
+            </span>
+          )}
+          {playback?.lastPlayedAt && (
+            <span>
+              Last played{' '}
+              <span className="text-slate-200" title={absoluteTime(playback.lastPlayedAt)}>
+                {relativeTime(playback.lastPlayedAt)}
+              </span>
+            </span>
+          )}
         </div>
       )}
     </section>

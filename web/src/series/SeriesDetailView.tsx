@@ -66,6 +66,7 @@ function SeriesDetail({ data }: { data: SeriesDetails }) {
         instances={data.instances}
         sizeOnDiskBytes={data.sizeOnDiskBytes}
         fileCount={data.fileCount}
+        addedAt={data.addedAt}
         playback={playback}
       />
 

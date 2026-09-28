@@ -200,7 +200,7 @@ impl CatalogRepository for SqliteCatalogRepository {
         let movie_rows = sqlx::query(
             r#"
             SELECT m.tmdb_id, m.title, m.title_slug, m.year, m.size_on_disk_bytes,
-                   m.file_count,
+                   m.file_count, m.added_at,
                    i.id AS instance_id, i.name AS instance_name, i.config_order,
                    i.last_successful_sync_at
             FROM movie_snapshots m
@@ -220,9 +220,7 @@ impl CatalogRepository for SqliteCatalogRepository {
                     year: row.try_get("year")?,
                     size_on_disk_bytes: row.try_get("size_on_disk_bytes")?,
                     file_count: row.try_get("file_count")?,
-                    // Availability drives the details plot only; the list query
-                    // doesn't fetch it.
-                    available_at: None,
+                    added_at: row.try_get("added_at")?,
                     instance: instance_reference(&row)?,
                     config_order: row.try_get("config_order")?,
                 })
@@ -232,7 +230,7 @@ impl CatalogRepository for SqliteCatalogRepository {
         let series_rows = sqlx::query(
             r#"
             SELECT s.tvdb_id, s.title, s.title_slug, s.year, s.size_on_disk_bytes,
-                   s.file_count,
+                   s.file_count, s.added_at,
                    i.id AS instance_id, i.name AS instance_name, i.config_order,
                    i.last_successful_sync_at
             FROM series_snapshots s
@@ -254,6 +252,7 @@ impl CatalogRepository for SqliteCatalogRepository {
                     year: row.try_get("year")?,
                     size_on_disk_bytes: row.try_get("size_on_disk_bytes")?,
                     file_count: row.try_get("file_count")?,
+                    added_at: row.try_get("added_at")?,
                     season_numbers: seasons
                         .remove(&(instance_id.clone(), tvdb_id))
                         .unwrap_or_default(),
@@ -266,6 +265,7 @@ impl CatalogRepository for SqliteCatalogRepository {
         let artist_rows = sqlx::query(
             r#"
             SELECT a.musicbrainz_id, a.name, a.size_on_disk_bytes, a.file_count,
+                   a.added_at,
                    i.id AS instance_id, i.name AS instance_name, i.config_order,
                    i.last_successful_sync_at
             FROM artist_snapshots a
@@ -285,6 +285,7 @@ impl CatalogRepository for SqliteCatalogRepository {
                     name: row.try_get("name")?,
                     size_on_disk_bytes: row.try_get("size_on_disk_bytes")?,
                     file_count: row.try_get("file_count")?,
+                    added_at: row.try_get("added_at")?,
                     album_musicbrainz_ids: albums
                         .remove(&(instance_id.clone(), musicbrainz_id))
                         .unwrap_or_default(),
@@ -355,7 +356,7 @@ impl CatalogRepository for SqliteCatalogRepository {
         let series_rows = sqlx::query(
             r#"
             SELECT s.tvdb_id, s.title, s.title_slug, s.year, s.size_on_disk_bytes,
-                   s.file_count,
+                   s.file_count, s.added_at,
                    i.id AS instance_id, i.name AS instance_name, i.config_order,
                    i.last_successful_sync_at
             FROM series_snapshots s
@@ -404,7 +405,7 @@ impl CatalogRepository for SqliteCatalogRepository {
         let episode_rows = sqlx::query(
             r#"
             SELECT e.season_number, e.episode_number, e.title, e.air_date_utc,
-                   e.has_file, e.size_on_disk_bytes
+                   e.has_file, e.size_on_disk_bytes, e.added_at
             FROM series_episode_snapshots e
             JOIN instances i ON i.id = e.instance_id
             WHERE e.tvdb_id = ?1
@@ -424,6 +425,7 @@ impl CatalogRepository for SqliteCatalogRepository {
                     air_date_utc: row.try_get("air_date_utc")?,
                     has_file: row.try_get("has_file")?,
                     size_on_disk_bytes: row.try_get("size_on_disk_bytes")?,
+                    added_at: row.try_get("added_at")?,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -486,6 +488,7 @@ impl CatalogRepository for SqliteCatalogRepository {
                     year: row.try_get("year")?,
                     size_on_disk_bytes: row.try_get("size_on_disk_bytes")?,
                     file_count: row.try_get("file_count")?,
+                    added_at: row.try_get("added_at")?,
                     season_numbers: season_numbers_by_instance
                         .remove(&instance_id)
                         .unwrap_or_default(),
@@ -536,7 +539,7 @@ impl CatalogRepository for SqliteCatalogRepository {
                     year: row.try_get("year")?,
                     size_on_disk_bytes: row.try_get("size_on_disk_bytes")?,
                     file_count: row.try_get("file_count")?,
-                    available_at: row.try_get("added_at")?,
+                    added_at: row.try_get("added_at")?,
                     instance: instance_reference(&row)?,
                     config_order: row.try_get("config_order")?,
                 })
@@ -573,7 +576,7 @@ impl CatalogRepository for SqliteCatalogRepository {
     async fn load_artist(&self, musicbrainz_id: &str) -> Result<Option<ArtistDetailsSources>> {
         let artist_rows = sqlx::query(
             r#"
-            SELECT a.name, a.size_on_disk_bytes, a.file_count,
+            SELECT a.name, a.size_on_disk_bytes, a.file_count, a.added_at,
                    i.id AS instance_id, i.name AS instance_name, i.config_order,
                    i.last_successful_sync_at
             FROM artist_snapshots a
@@ -630,6 +633,7 @@ impl CatalogRepository for SqliteCatalogRepository {
                     name: row.try_get("name")?,
                     size_on_disk_bytes: row.try_get("size_on_disk_bytes")?,
                     file_count: row.try_get("file_count")?,
+                    added_at: row.try_get("added_at")?,
                     album_musicbrainz_ids: album_ids_by_instance
                         .remove(&instance_id)
                         .unwrap_or_default(),

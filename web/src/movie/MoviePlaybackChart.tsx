@@ -17,13 +17,13 @@ const RESOLUTION_LABELS: Record<Resolution, string> = {
 // scroll horizontally once they hit their minimum width.
 export function MoviePlaybackChart({
   dailyPlayback,
-  availableAt,
+  addedAt,
 }: {
   dailyPlayback: DailyPlayback[]
-  availableAt: string | null
+  addedAt: string | null
 }) {
   const [resolution, setResolution] = useState<Resolution>('month')
-  const chart = buildMoviePlaybackChart(dailyPlayback, availableAt, resolution)
+  const chart = buildMoviePlaybackChart(dailyPlayback, addedAt, resolution)
   const first = chart.bars.at(0)
   const last = chart.bars.at(-1)
 

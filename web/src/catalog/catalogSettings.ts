@@ -28,6 +28,7 @@ const SORTABLE_COLUMN_IDS = new Set<string>([
   'sizeOnDiskBytes',
   'fileCount',
   'detail',
+  'addedAt',
   'plays',
   'watchTime',
   'lastPlayed',

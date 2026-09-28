@@ -10,6 +10,16 @@ test('catalog links through to the movie details page', async ({ page }) => {
   await expect(page.getByRole('heading', { name: /Mock Movie/ })).toBeVisible()
 })
 
+test('catalog shows how long each item has been in the library', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.getByRole('columnheader', { name: 'Age' })).toBeVisible()
+
+  // Radarr added the movie in January 2025, so it is years rather than days old
+  // and the cell is never the unknown-age dash.
+  const row = page.getByRole('row').filter({ hasText: 'Mock Movie' })
+  await expect(row.getByText(/^\d+(y|mo|d|h)$/)).toBeVisible()
+})
+
 test('shows size, file, and playback stats without an instance table', async ({ page }) => {
   await page.goto('/movies/550')
   await expect(page.getByRole('heading', { name: 'Mock Movie (1999)' })).toBeVisible()
@@ -22,6 +32,7 @@ test('shows size, file, and playback stats without an instance table', async ({ 
   await expect(page.getByText('Plays', { exact: true }).first()).toBeVisible()
   await expect(page.getByText('1h 30m')).toBeVisible()
   await expect(page.getByText('Last played')).toBeVisible()
+  await expect(page.getByText('Added')).toBeVisible()
 
   // The per-user breakdown lists the single Tautulli watcher.
   await expect(page.getByRole('heading', { name: 'Watched by' })).toBeVisible()

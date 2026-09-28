@@ -8,7 +8,7 @@ use unpopularr::{
     catalog::{CatalogRepository, CatalogService, adapters::sqlite::SqliteCatalogRepository},
     collection::{
         CollectionRepository, StartSync, SyncService, SyncTrigger, adapters::arr::ArrClient,
-        adapters::sqlite::SqliteCollectionRepository,
+        adapters::files::FileProbe, adapters::sqlite::SqliteCollectionRepository,
     },
     config::AppConfig,
     database,
@@ -53,6 +53,9 @@ async fn main() -> Result<()> {
         collection_repository,
         ArrClient::new()?,
         Arc::clone(&instances),
+        config
+            .media_probe
+            .map(|probe| Arc::new(FileProbe::new(probe))),
     );
     let catalog_service = CatalogService::new(catalog_repository);
     let playback_runtime = config

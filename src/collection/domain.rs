@@ -20,6 +20,15 @@ impl Snapshot {
     }
 }
 
+/// The earlier of two acquisition hints, ignoring missing ones. Acquisition age
+/// answers "how long have we had this", so the oldest evidence anywhere wins.
+pub fn earliest(a: Option<DateTime<Utc>>, b: Option<DateTime<Utc>>) -> Option<DateTime<Utc>> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (found, None) | (None, found) => found,
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct MovieSnapshot {
     pub tmdb_id: i64,
@@ -29,9 +38,13 @@ pub struct MovieSnapshot {
     pub year: i64,
     pub size_on_disk_bytes: i64,
     pub file_count: i64,
-    /// When Radarr first added the movie to its library. `None` when Radarr
-    /// omits the field; drives the movie details playback-by-month plot.
+    /// Oldest acquisition hint this instance reports: Radarr's library `added`
+    /// folded with the movie file's `dateAdded`, and with the file's timestamps
+    /// when the filesystem probe is configured. `None` when nothing reports one.
     pub added_at: Option<DateTime<Utc>>,
+    /// Radarr's path to the movie file, for the filesystem probe. Transport
+    /// only: never persisted, never serialized.
+    pub file_path: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -43,6 +56,10 @@ pub struct SeriesSnapshot {
     pub year: i64,
     pub size_on_disk_bytes: i64,
     pub file_count: i64,
+    /// Oldest acquisition hint across the series and every episode file it
+    /// holds. Stored so the catalog list reads one column instead of taking a
+    /// `MIN` over every episode row.
+    pub added_at: Option<DateTime<Utc>>,
     pub seasons: Vec<SeriesSeasonSnapshot>,
     pub episodes: Vec<SeriesEpisodeSnapshot>,
 }
@@ -63,6 +80,12 @@ pub struct SeriesEpisodeSnapshot {
     pub air_date_utc: Option<DateTime<Utc>>,
     pub has_file: bool,
     pub size_on_disk_bytes: i64,
+    /// When this episode's file was acquired. `None` for an episode without a
+    /// file, or when Sonarr omits the date.
+    pub added_at: Option<DateTime<Utc>>,
+    /// Sonarr's path to the episode file, for the filesystem probe. Transport
+    /// only: never persisted, never serialized.
+    pub file_path: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -71,6 +94,11 @@ pub struct ArtistSnapshot {
     pub name: String,
     pub size_on_disk_bytes: i64,
     pub file_count: i64,
+    /// Oldest acquisition hint across the artist and its albums.
+    pub added_at: Option<DateTime<Utc>>,
+    /// Lidarr's path to the artist folder, for the filesystem probe. Transport
+    /// only: never persisted, never serialized.
+    pub path: Option<String>,
     pub albums: Vec<ArtistAlbumSnapshot>,
 }
 
@@ -80,6 +108,8 @@ pub struct ArtistAlbumSnapshot {
     pub title: String,
     pub size_on_disk_bytes: i64,
     pub file_count: i64,
+    /// When Lidarr added the album. `None` when Lidarr omits the field.
+    pub added_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
