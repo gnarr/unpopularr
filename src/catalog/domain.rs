@@ -3,6 +3,8 @@ use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
+use crate::collection::earliest;
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InstanceReference {
@@ -90,10 +92,9 @@ pub struct MovieSource {
     pub year: i64,
     pub size_on_disk_bytes: i64,
     pub file_count: i64,
-    /// When this instance's Radarr added the movie. `None` before a re-sync
-    /// populates the column, or when Radarr omits it. Details-only; the flat
-    /// catalog list leaves it `None`.
-    pub available_at: Option<DateTime<Utc>>,
+    /// Oldest acquisition hint this instance holds for the movie. `None` before
+    /// a re-sync populates the column, or when nothing reports one.
+    pub added_at: Option<DateTime<Utc>>,
     pub instance: InstanceReference,
     pub config_order: i64,
 }
@@ -106,6 +107,9 @@ pub struct SeriesSource {
     pub year: i64,
     pub size_on_disk_bytes: i64,
     pub file_count: i64,
+    /// Oldest acquisition hint this instance holds for the series, already
+    /// rolled up over its episode files at sync time.
+    pub added_at: Option<DateTime<Utc>>,
     pub season_numbers: Vec<i64>,
     pub instance: InstanceReference,
     pub config_order: i64,
@@ -117,6 +121,9 @@ pub struct ArtistSource {
     pub name: String,
     pub size_on_disk_bytes: i64,
     pub file_count: i64,
+    /// Oldest acquisition hint this instance holds for the artist, already
+    /// rolled up over its albums at sync time.
+    pub added_at: Option<DateTime<Utc>>,
     pub album_musicbrainz_ids: Vec<String>,
     pub instance: InstanceReference,
     pub config_order: i64,
@@ -142,6 +149,7 @@ pub struct SeriesEpisodeFile {
     pub air_date_utc: Option<DateTime<Utc>>,
     pub has_file: bool,
     pub size_on_disk_bytes: i64,
+    pub added_at: Option<DateTime<Utc>>,
 }
 
 /// Read-time playback aggregate for one (season, episode) of a series,
@@ -210,6 +218,8 @@ pub struct SeriesEpisodeDetail {
     pub air_date_utc: Option<DateTime<Utc>>,
     pub has_file: bool,
     pub size_on_disk_bytes: i64,
+    /// When this episode's file was acquired, earliest across instances.
+    pub added_at: Option<DateTime<Utc>>,
     pub playback: Option<PlaybackMetrics>,
 }
 
@@ -247,6 +257,10 @@ pub struct SeriesDetails {
     pub size_on_disk_bytes: i64,
     pub file_count: i64,
     pub instances: Vec<InstanceReference>,
+    /// Oldest acquisition hint across instances — the age of the oldest episode
+    /// file, or of the series itself when no episode reports one. `None` until
+    /// a re-sync populates it.
+    pub added_at: Option<DateTime<Utc>>,
     pub seasons: Vec<SeriesSeasonDetail>,
     pub instance_details: Vec<SeriesInstanceDetail>,
     pub playback: Option<PlaybackMetrics>,
@@ -282,9 +296,9 @@ pub struct MovieDetails {
     pub instances: Vec<InstanceReference>,
     pub instance_details: Vec<MovieInstanceDetail>,
     pub playback: Option<PlaybackMetrics>,
-    /// Earliest Radarr "added" date across instances — the plot's left edge.
+    /// Oldest acquisition hint across instances, and the plot's left edge.
     /// `None` until a re-sync populates it.
-    pub available_at: Option<DateTime<Utc>>,
+    pub added_at: Option<DateTime<Utc>>,
     /// Per-day playback totals, ascending by day.
     pub daily_playback: Vec<DailyPlayback>,
     /// Per-user playback, most plays first. Empty when playback is unavailable.
@@ -325,6 +339,10 @@ pub struct ArtistDetails {
     pub size_on_disk_bytes: i64,
     pub file_count: i64,
     pub instances: Vec<InstanceReference>,
+    /// Oldest acquisition hint across instances — the age of the oldest album,
+    /// or of the artist itself when no album reports one. `None` until a
+    /// re-sync populates it.
+    pub added_at: Option<DateTime<Utc>>,
     pub albums: Vec<ArtistAlbumDetail>,
     pub instance_details: Vec<ArtistInstanceDetail>,
     pub playback: Option<PlaybackMetrics>,
@@ -347,6 +365,7 @@ pub enum ContentItem {
         size_on_disk_bytes: i64,
         file_count: i64,
         instances: Vec<InstanceReference>,
+        added_at: Option<DateTime<Utc>>,
         tmdb_id: i64,
         year: i64,
         playback: Option<PlaybackMetrics>,
@@ -356,6 +375,7 @@ pub enum ContentItem {
         size_on_disk_bytes: i64,
         file_count: i64,
         instances: Vec<InstanceReference>,
+        added_at: Option<DateTime<Utc>>,
         tvdb_id: i64,
         year: i64,
         seasons_with_files: i64,
@@ -366,6 +386,7 @@ pub enum ContentItem {
         size_on_disk_bytes: i64,
         file_count: i64,
         instances: Vec<InstanceReference>,
+        added_at: Option<DateTime<Utc>>,
         music_brainz_id: String,
         albums_with_files: i64,
         playback: Option<PlaybackMetrics>,
@@ -422,10 +443,12 @@ pub fn aggregate(mut sources: CatalogSources) -> Vec<ContentItem> {
                 year: source.year,
                 size_on_disk_bytes: 0,
                 file_count: 0,
+                added_at: None,
                 instances: Vec::new(),
             });
         aggregate.size_on_disk_bytes += source.size_on_disk_bytes;
         aggregate.file_count += source.file_count;
+        aggregate.added_at = earliest(aggregate.added_at, source.added_at);
         if source.file_count > 0 {
             let mut instance = source.instance;
             instance.deep_link_path = deep_link_path("movie", &source.title_slug);
@@ -442,11 +465,13 @@ pub fn aggregate(mut sources: CatalogSources) -> Vec<ContentItem> {
                 year: source.year,
                 size_on_disk_bytes: 0,
                 file_count: 0,
+                added_at: None,
                 season_numbers: BTreeSet::new(),
                 instances: Vec::new(),
             });
         aggregate.size_on_disk_bytes += source.size_on_disk_bytes;
         aggregate.file_count += source.file_count;
+        aggregate.added_at = earliest(aggregate.added_at, source.added_at);
         aggregate.season_numbers.extend(source.season_numbers);
         if source.file_count > 0 {
             let mut instance = source.instance;
@@ -464,11 +489,13 @@ pub fn aggregate(mut sources: CatalogSources) -> Vec<ContentItem> {
                 name: source.name,
                 size_on_disk_bytes: 0,
                 file_count: 0,
+                added_at: None,
                 album_musicbrainz_ids: BTreeSet::new(),
                 instances: Vec::new(),
             });
         aggregate.size_on_disk_bytes += source.size_on_disk_bytes;
         aggregate.file_count += source.file_count;
+        aggregate.added_at = earliest(aggregate.added_at, source.added_at);
         aggregate
             .album_musicbrainz_ids
             .extend(source.album_musicbrainz_ids);
@@ -486,6 +513,7 @@ pub fn aggregate(mut sources: CatalogSources) -> Vec<ContentItem> {
             size_on_disk_bytes: movie.size_on_disk_bytes,
             file_count: movie.file_count,
             instances: movie.instances,
+            added_at: movie.added_at,
             tmdb_id,
             year: movie.year,
             playback: playback_metrics(playback.available, playback.movies.get(&tmdb_id)),
@@ -497,6 +525,7 @@ pub fn aggregate(mut sources: CatalogSources) -> Vec<ContentItem> {
             size_on_disk_bytes: series.size_on_disk_bytes,
             file_count: series.file_count,
             instances: series.instances,
+            added_at: series.added_at,
             tvdb_id,
             year: series.year,
             seasons_with_files: i64::try_from(series.season_numbers.len()).unwrap_or(i64::MAX),
@@ -510,6 +539,7 @@ pub fn aggregate(mut sources: CatalogSources) -> Vec<ContentItem> {
             size_on_disk_bytes: artist.size_on_disk_bytes,
             file_count: artist.file_count,
             instances: artist.instances,
+            added_at: artist.added_at,
             music_brainz_id,
             albums_with_files: i64::try_from(artist.album_musicbrainz_ids.len())
                 .unwrap_or(i64::MAX),
@@ -542,11 +572,13 @@ pub fn aggregate_series(mut sources: SeriesDetailsSources) -> Option<SeriesDetai
 
     let mut size_on_disk_bytes = 0;
     let mut file_count = 0;
+    let mut added_at = None;
     let mut instances = Vec::new();
     let mut instance_details = Vec::with_capacity(sources.instances.len());
     for source in sources.instances {
         size_on_disk_bytes += source.size_on_disk_bytes;
         file_count += source.file_count;
+        added_at = earliest(added_at, source.added_at);
         let mut instance = source.instance;
         instance.deep_link_path = deep_link_path("series", &source.title_slug);
         if source.file_count > 0 {
@@ -569,6 +601,8 @@ pub fn aggregate_series(mut sources: SeriesDetailsSources) -> Option<SeriesDetai
 
     // First instance wins title/air date (rows arrive ordered by config_order);
     // file presence is OR'd and sizes are summed, like the series totals.
+    // `added_at` is the exception to first-wins: the oldest copy anywhere sets
+    // the episode's age, matching how the series total is folded.
     let mut episode_map = BTreeMap::<i64, BTreeMap<i64, EpisodeAggregate>>::new();
     for episode in sources.episodes {
         match episode_map
@@ -582,12 +616,14 @@ pub fn aggregate_series(mut sources: SeriesDetailsSources) -> Option<SeriesDetai
                     air_date_utc: episode.air_date_utc,
                     has_file: episode.has_file,
                     size_on_disk_bytes: episode.size_on_disk_bytes,
+                    added_at: episode.added_at,
                 });
             }
             Entry::Occupied(mut slot) => {
                 let aggregate = slot.get_mut();
                 aggregate.has_file |= episode.has_file;
                 aggregate.size_on_disk_bytes += episode.size_on_disk_bytes;
+                aggregate.added_at = earliest(aggregate.added_at, episode.added_at);
             }
         }
     }
@@ -638,6 +674,7 @@ pub fn aggregate_series(mut sources: SeriesDetailsSources) -> Option<SeriesDetai
                         air_date_utc: aggregate.air_date_utc,
                         has_file: aggregate.has_file,
                         size_on_disk_bytes: aggregate.size_on_disk_bytes,
+                        added_at: aggregate.added_at,
                         playback: playback_metrics(sources.playback_available, metrics),
                     }
                 })
@@ -671,6 +708,7 @@ pub fn aggregate_series(mut sources: SeriesDetailsSources) -> Option<SeriesDetai
         size_on_disk_bytes,
         file_count,
         instances,
+        added_at,
         seasons,
         instance_details,
         playback,
@@ -685,6 +723,7 @@ struct EpisodeAggregate {
     air_date_utc: Option<DateTime<Utc>>,
     has_file: bool,
     size_on_disk_bytes: i64,
+    added_at: Option<DateTime<Utc>>,
 }
 
 /// Fold the raw per-instance rows for one movie into the serialized
@@ -699,15 +738,13 @@ pub fn aggregate_movie(mut sources: MovieDetailsSources) -> Option<MovieDetails>
 
     let mut size_on_disk_bytes = 0;
     let mut file_count = 0;
-    let mut available_at: Option<DateTime<Utc>> = None;
+    let mut added_at = None;
     let mut instances = Vec::new();
     let mut instance_details = Vec::with_capacity(sources.instances.len());
     for source in sources.instances {
         size_on_disk_bytes += source.size_on_disk_bytes;
         file_count += source.file_count;
-        if let Some(added) = source.available_at {
-            available_at = Some(available_at.map_or(added, |current| current.min(added)));
-        }
+        added_at = earliest(added_at, source.added_at);
         let mut instance = source.instance;
         instance.deep_link_path = deep_link_path("movie", &source.title_slug);
         if source.file_count > 0 {
@@ -733,7 +770,7 @@ pub fn aggregate_movie(mut sources: MovieDetailsSources) -> Option<MovieDetails>
         instances,
         instance_details,
         playback,
-        available_at,
+        added_at,
         daily_playback: sources.daily_playback,
         user_playback: sources.user_playback,
         unknown_user_play_count,
@@ -755,10 +792,12 @@ pub fn aggregate_artist(mut sources: ArtistDetailsSources) -> Option<ArtistDetai
     let mut size_on_disk_bytes = 0;
     let mut file_count = 0;
     let mut instances = Vec::new();
+    let mut added_at = None;
     let mut instance_details = Vec::with_capacity(sources.instances.len());
     for source in sources.instances {
         size_on_disk_bytes += source.size_on_disk_bytes;
         file_count += source.file_count;
+        added_at = earliest(added_at, source.added_at);
         let mut instance = source.instance;
         instance.deep_link_path = artist_link.clone();
         if source.file_count > 0 {
@@ -815,6 +854,7 @@ pub fn aggregate_artist(mut sources: ArtistDetailsSources) -> Option<ArtistDetai
         size_on_disk_bytes,
         file_count,
         instances,
+        added_at,
         albums,
         instance_details,
         playback,
@@ -859,6 +899,7 @@ struct MovieAggregate {
     year: i64,
     size_on_disk_bytes: i64,
     file_count: i64,
+    added_at: Option<DateTime<Utc>>,
     instances: Vec<InstanceReference>,
 }
 
@@ -867,6 +908,7 @@ struct SeriesAggregate {
     year: i64,
     size_on_disk_bytes: i64,
     file_count: i64,
+    added_at: Option<DateTime<Utc>>,
     season_numbers: BTreeSet<i64>,
     instances: Vec<InstanceReference>,
 }
@@ -875,6 +917,7 @@ struct ArtistAggregate {
     name: String,
     size_on_disk_bytes: i64,
     file_count: i64,
+    added_at: Option<DateTime<Utc>>,
     album_musicbrainz_ids: BTreeSet<String>,
     instances: Vec<InstanceReference>,
 }
@@ -883,7 +926,7 @@ struct ArtistAggregate {
 mod tests {
     use std::collections::BTreeMap;
 
-    use chrono::Utc;
+    use chrono::{DateTime, Utc};
 
     use super::{
         ArtistAlbumFile, ArtistDetailsSources, ArtistSource, CatalogPlayback, CatalogSources,
@@ -913,7 +956,7 @@ mod tests {
                     year: 2020,
                     size_on_disk_bytes: 100,
                     file_count: 1,
-                    available_at: None,
+                    added_at: None,
                     instance: instance("hd", "HD"),
                     config_order: 0,
                 },
@@ -924,7 +967,7 @@ mod tests {
                     year: 2021,
                     size_on_disk_bytes: 400,
                     file_count: 1,
-                    available_at: None,
+                    added_at: None,
                     instance: instance("uhd", "4K"),
                     config_order: 1,
                 },
@@ -958,6 +1001,59 @@ mod tests {
         );
     }
 
+    fn added_at(item: &ContentItem) -> Option<DateTime<Utc>> {
+        match item {
+            ContentItem::Artist { added_at, .. }
+            | ContentItem::Movie { added_at, .. }
+            | ContentItem::Series { added_at, .. } => *added_at,
+        }
+    }
+
+    #[test]
+    fn ages_items_from_the_oldest_instance_holding_them() {
+        let early = DateTime::from_timestamp(1_000, 0);
+        let late = DateTime::from_timestamp(2_000, 0);
+        let dated = |mut source: MovieSource, date| {
+            source.added_at = date;
+            source
+        };
+
+        let content = aggregate(CatalogSources {
+            // The later-added instance sorts first to prove min, not first-wins.
+            movies: vec![
+                dated(movie_source("Movie", 100, 1, instance("hd", "HD"), 0), late),
+                dated(
+                    movie_source("Movie", 100, 1, instance("uhd", "4K"), 1),
+                    early,
+                ),
+            ],
+            series: vec![{
+                let mut source =
+                    series_source("Show", 100, 1, vec![1], instance("sonarr", "Sonarr"), 0);
+                source.added_at = early;
+                source
+            }],
+            artists: vec![artist_source(
+                "Artist",
+                100,
+                1,
+                vec!["a"],
+                instance("lidarr", "Lidarr"),
+                0,
+            )],
+            ..CatalogSources::default()
+        });
+
+        let by_type = content
+            .iter()
+            .map(|item| (item.type_name(), added_at(item)))
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(by_type["movie"], early);
+        assert_eq!(by_type["series"], early);
+        // No instance reported a date, so the item has no known age.
+        assert_eq!(by_type["artist"], None);
+    }
+
     #[test]
     fn counts_unique_seasons_and_albums_and_filters_empty_content() {
         let shared_instance = instance("one", "One");
@@ -969,7 +1065,7 @@ mod tests {
                 year: 2022,
                 size_on_disk_bytes: 0,
                 file_count: 0,
-                available_at: None,
+                added_at: None,
                 instance: shared_instance.clone(),
                 config_order: 0,
             }],
@@ -981,6 +1077,7 @@ mod tests {
                     year: 2020,
                     size_on_disk_bytes: 100,
                     file_count: 2,
+                    added_at: None,
                     season_numbers: vec![1, 2],
                     instance: shared_instance.clone(),
                     config_order: 0,
@@ -992,6 +1089,7 @@ mod tests {
                     year: 2020,
                     size_on_disk_bytes: 200,
                     file_count: 2,
+                    added_at: None,
                     season_numbers: vec![2, 3],
                     instance: instance("two", "Two"),
                     config_order: 1,
@@ -1003,6 +1101,7 @@ mod tests {
                     name: "Artist".to_owned(),
                     size_on_disk_bytes: 100,
                     file_count: 2,
+                    added_at: None,
                     album_musicbrainz_ids: vec!["a".to_owned(), "b".to_owned()],
                     instance: shared_instance,
                     config_order: 0,
@@ -1012,6 +1111,7 @@ mod tests {
                     name: "Artist".to_owned(),
                     size_on_disk_bytes: 200,
                     file_count: 3,
+                    added_at: None,
                     album_musicbrainz_ids: vec!["b".to_owned(), "c".to_owned()],
                     instance: instance("two", "Two"),
                     config_order: 1,
@@ -1046,7 +1146,7 @@ mod tests {
             year: 2024,
             size_on_disk_bytes: 100,
             file_count: 1,
-            available_at: None,
+            added_at: None,
             instance: instance("one", "One"),
             config_order: 0,
         };
@@ -1115,6 +1215,7 @@ mod tests {
             year: 2020,
             size_on_disk_bytes,
             file_count,
+            added_at: None,
             season_numbers,
             instance,
             config_order,
@@ -1286,6 +1387,7 @@ mod tests {
             air_date_utc: None,
             has_file,
             size_on_disk_bytes,
+            added_at: None,
         }
     }
 
@@ -1322,6 +1424,47 @@ mod tests {
         assert!(season.episodes[1].has_file);
         assert!(season.playback.is_none()); // playback unavailable
         assert_eq!(details.unattributed_play_count, None);
+    }
+
+    #[test]
+    fn series_details_ages_episodes_and_the_series_from_the_oldest_copy() {
+        let early = DateTime::from_timestamp(1_000, 0);
+        let late = DateTime::from_timestamp(2_000, 0);
+        let dated = |mut file: SeriesEpisodeFile, date| {
+            file.added_at = date;
+            file
+        };
+        let dated_source = |mut source: SeriesSource, date| {
+            source.added_at = date;
+            source
+        };
+
+        let details = aggregate_series(SeriesDetailsSources {
+            instances: vec![
+                dated_source(
+                    series_source("Show", 100, 2, vec![1], instance("one", "One"), 0),
+                    late,
+                ),
+                dated_source(
+                    series_source("Show", 480, 2, vec![1], instance("two", "Two"), 1),
+                    early,
+                ),
+            ],
+            // Unlike title and air date, a second instance's date is not
+            // ignored: the oldest copy anywhere sets the episode's age.
+            episodes: vec![
+                dated(episode_file(1, 1, "Pilot", true, 100), late),
+                dated(episode_file(1, 1, "Pilot (4K)", true, 400), early),
+                episode_file(1, 2, "Second", true, 80),
+            ],
+            ..SeriesDetailsSources::default()
+        })
+        .expect("series details");
+
+        let episodes = &details.seasons[0].episodes;
+        assert_eq!(episodes[0].added_at, early);
+        assert_eq!(episodes[1].added_at, None);
+        assert_eq!(details.added_at, early);
     }
 
     #[test]
@@ -1414,7 +1557,7 @@ mod tests {
             year: 2020,
             size_on_disk_bytes,
             file_count,
-            available_at: None,
+            added_at: None,
             instance,
             config_order,
         }
@@ -1549,12 +1692,12 @@ mod tests {
     }
 
     #[test]
-    fn movie_details_takes_earliest_availability_and_passes_daily_playback() {
+    fn movie_details_takes_earliest_added_at_and_passes_daily_playback() {
         let early = chrono::DateTime::from_timestamp(1_000, 0);
         let late = chrono::DateTime::from_timestamp(2_000, 0);
-        let with_availability = |available_at, config_order| {
+        let with_availability = |added_at, config_order| {
             let mut source = movie_source("Movie", 100, 1, instance("one", "One"), config_order);
-            source.available_at = available_at;
+            source.added_at = added_at;
             source
         };
 
@@ -1582,7 +1725,7 @@ mod tests {
         })
         .expect("movie details");
 
-        assert_eq!(details.available_at, early);
+        assert_eq!(details.added_at, early);
         assert_eq!(details.daily_playback.len(), 2);
         assert_eq!(details.daily_playback[0].date, "2024-01-10");
         assert_eq!(details.daily_playback[1].play_duration_seconds, 1_800);
@@ -1601,6 +1744,7 @@ mod tests {
             name: name.to_owned(),
             size_on_disk_bytes,
             file_count,
+            added_at: None,
             album_musicbrainz_ids: album_musicbrainz_ids
                 .into_iter()
                 .map(str::to_owned)

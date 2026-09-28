@@ -240,6 +240,7 @@ mod tests {
                         "tmdbId": 42,
                         "title": "Movie",
                         "year": 2024,
+                        "added": "2024-03-15T10:00:00Z",
                         "statistics": {"movieFileCount": 1, "sizeOnDisk": 100}
                     }])),
             )
@@ -270,6 +271,7 @@ mod tests {
                 collection_port,
                 ArrClient::new().expect("Arr client"),
                 Arc::new(vec![instance]),
+                None,
             ),
             playback: None,
             instances: Arc::new(Vec::new()),
@@ -356,6 +358,7 @@ mod tests {
         assert_eq!(content[0]["contentType"], "movie");
         assert_eq!(content[0]["tmdbId"], 42);
         assert_eq!(content[0]["instances"][0]["id"], "radarr");
+        assert_eq!(content[0]["addedAt"], "2024-03-15T10:00:00Z");
         assert!(content[0]["playback"].is_null());
 
         sqlx::query(
@@ -412,6 +415,7 @@ mod tests {
                 Arc::clone(&collection_port),
                 ArrClient::new().expect("Arr client"),
                 Arc::new(Vec::new()),
+                None,
             ),
             playback: None,
             instances: Arc::new(Vec::new()),
@@ -462,6 +466,7 @@ mod tests {
                 collection_port,
                 ArrClient::new().expect("Arr client"),
                 Arc::new(Vec::new()),
+                None,
             ),
             playback: Some(PlaybackService::new(
                 playback_port,
@@ -551,6 +556,7 @@ mod tests {
                 collection_port,
                 ArrClient::new().expect("Arr client"),
                 Arc::new(Vec::new()),
+                None,
             ),
             playback: None,
             instances: Arc::new(Vec::new()),
@@ -649,6 +655,7 @@ mod tests {
                 collection_port,
                 ArrClient::new().expect("Arr client"),
                 Arc::clone(&instances),
+                None,
             ),
             playback: None,
             instances,
@@ -704,9 +711,10 @@ mod tests {
         sqlx::query(
             r#"
             INSERT INTO series_snapshots
-                (instance_id, tvdb_id, title, title_slug, year, size_on_disk_bytes, file_count)
-            VALUES ('a', 55, 'Show', 'show', 2020, 100, 3),
-                   ('b', 55, 'Other', 'other', 2021, 200, 2)
+                (instance_id, tvdb_id, title, title_slug, year, size_on_disk_bytes,
+                 file_count, added_at)
+            VALUES ('a', 55, 'Show', 'show', 2020, 100, 3, '2022-01-01T00:00:00Z'),
+                   ('b', 55, 'Other', 'other', 2021, 200, 2, '2019-06-01T00:00:00Z')
             "#,
         )
         .execute(&pool)
@@ -728,12 +736,12 @@ mod tests {
             r#"
             INSERT INTO series_episode_snapshots (
                 instance_id, tvdb_id, season_number, episode_number,
-                title, air_date_utc, has_file, size_on_disk_bytes
+                title, air_date_utc, has_file, size_on_disk_bytes, added_at
             )
             VALUES
-                ('a', 55, 1, 1, 'Pilot', '2020-01-01T00:00:00Z', 1, 100),
-                ('a', 55, 1, 2, 'Second', '2020-01-08T00:00:00Z', 0, 0),
-                ('b', 55, 1, 1, 'Pilot (4K)', '2020-01-01T00:00:00Z', 1, 400)
+                ('a', 55, 1, 1, 'Pilot', '2020-01-01T00:00:00Z', 1, 100, '2022-01-01T00:00:00Z'),
+                ('a', 55, 1, 2, 'Second', '2020-01-08T00:00:00Z', 0, 0, NULL),
+                ('b', 55, 1, 1, 'Pilot (4K)', '2020-01-01T00:00:00Z', 1, 400, '2019-06-01T00:00:00Z')
             "#,
         )
         .execute(&pool)
@@ -778,6 +786,7 @@ mod tests {
                         "airDateUtc": "2020-01-01T00:00:00Z",
                         "hasFile": true,
                         "sizeOnDiskBytes": 500,
+                        "addedAt": "2019-06-01T00:00:00Z",
                         "playback": null,
                     },
                     {
@@ -786,6 +795,7 @@ mod tests {
                         "airDateUtc": "2020-01-08T00:00:00Z",
                         "hasFile": false,
                         "sizeOnDiskBytes": 0,
+                        "addedAt": null,
                         "playback": null,
                     },
                 ],
@@ -796,6 +806,8 @@ mod tests {
         assert_eq!(details["seasons"][1]["fileCount"], 2);
         assert_eq!(details["seasons"][1]["episodes"], serde_json::json!([]));
         assert_eq!(details["seasons"][2]["seasonNumber"], 3);
+        // The oldest copy on any instance sets the series' age.
+        assert_eq!(details["addedAt"], "2019-06-01T00:00:00Z");
         assert!(details["playback"].is_null());
         assert!(details["unattributedPlayCount"].is_null());
         assert_eq!(details["userPlayback"], serde_json::json!([]));
@@ -1043,7 +1055,7 @@ mod tests {
 
         let (status, details) = get_json(&app, "/api/v1/movies/42").await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(details["availableAt"], "2023-05-01T00:00:00Z");
+        assert_eq!(details["addedAt"], "2023-05-01T00:00:00Z");
         let daily = details["dailyPlayback"].as_array().expect("daily");
         assert_eq!(daily.len(), 2);
         assert_eq!(
@@ -1097,8 +1109,9 @@ mod tests {
         sqlx::query(
             r#"
             INSERT INTO artist_snapshots
-                (instance_id, musicbrainz_id, name, size_on_disk_bytes, file_count)
-            VALUES ('a', 'artist-1', 'Artist', 500, 6), ('b', 'artist-1', 'Other', 400, 3)
+                (instance_id, musicbrainz_id, name, size_on_disk_bytes, file_count, added_at)
+            VALUES ('a', 'artist-1', 'Artist', 500, 6, '2021-04-01T00:00:00Z'),
+                   ('b', 'artist-1', 'Other', 400, 3, NULL)
             "#,
         )
         .execute(&pool)
@@ -1135,6 +1148,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(details["displayName"], "Artist"); // lowest config_order wins
         assert_eq!(details["musicBrainzId"], "artist-1");
+        assert_eq!(details["addedAt"], "2021-04-01T00:00:00Z");
         assert_eq!(details["sizeOnDiskBytes"], 900);
         assert_eq!(details["fileCount"], 9);
         assert_eq!(details["instances"].as_array().expect("instances").len(), 2);

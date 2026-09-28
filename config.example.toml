@@ -18,6 +18,19 @@ api_key_env = "TAUTULLI_API_KEY"
 interval_seconds = 21600
 run_on_startup = true
 
+# Optional. Enables the filesystem probe: unpopularr stats your media files and
+# uses the oldest file timestamp when it predates the date the *arr app reports,
+# which recovers real ages after an *arr database rebuild. Remove this section
+# to disable probing. It needs the media mounted read-only into this container.
+# [media_probe]
+# Rewrites a path prefix as an *arr instance reports it into a path this process
+# can see. Omit when unpopularr sees media at exactly the same paths the *arr
+# apps use. The longest matching prefix wins, so the order does not matter.
+# path_mappings = [
+#   { from = "/data/media/movies", to = "/media/movies" },
+#   { from = "/data/media/tv", to = "/media/tv" },
+# ]
+
 [[instances]]
 id = "radarr-hd"
 name = "Radarr HD"

@@ -18,6 +18,7 @@ function episode(overrides: Partial<SeriesEpisodeDetail> = {}): SeriesEpisodeDet
     airDateUtc: '2026-01-01T00:00:00Z',
     hasFile: true,
     sizeOnDiskBytes: 512 * 1024 * 1024,
+    addedAt: null,
     playback: null,
     ...overrides,
   }

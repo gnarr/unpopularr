@@ -76,4 +76,11 @@ describe('catalogSettings', () => {
     const raw = JSON.stringify({ instanceIds: ['radarr-hd', 42, null] })
     expect(parseCatalogSettings(raw).instanceIds).toEqual(['radarr-hd'])
   })
+
+  it('keeps a sort on the age column', () => {
+    // Guards the SORTABLE_COLUMN_IDS allowlist: an unregistered id is dropped
+    // silently, losing the user's persisted sort on every reload.
+    const raw = JSON.stringify({ sorting: [{ id: 'addedAt', desc: true }] })
+    expect(parseCatalogSettings(raw).sorting).toEqual([{ id: 'addedAt', desc: true }])
+  })
 })

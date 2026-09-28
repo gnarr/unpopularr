@@ -25,6 +25,9 @@ pub struct AppConfig {
     pub sync: SyncConfig,
     pub instances: Vec<Instance>,
     pub playback: Option<PlaybackConfig>,
+    /// Present when `[media_probe]` is configured. Its presence is the enable
+    /// flag; there is no separate boolean.
+    pub media_probe: Option<MediaProbeConfig>,
 }
 
 #[derive(Debug)]
@@ -50,6 +53,22 @@ pub struct PlaybackConfig {
     pub run_on_startup: bool,
 }
 
+/// Settings for the optional filesystem probe, which reads media file
+/// timestamps to catch acquisition dates that predate what the *arr apps know.
+#[derive(Debug)]
+pub struct MediaProbeConfig {
+    /// Prefix rewrites from an *arr instance's view of the filesystem to this
+    /// process's. Sorted longest-first, so the most specific rule wins
+    /// regardless of the order it was written in. Empty means "same paths".
+    pub path_mappings: Vec<PathMapping>,
+}
+
+#[derive(Debug)]
+pub struct PathMapping {
+    pub from: PathBuf,
+    pub to: PathBuf,
+}
+
 #[derive(Deserialize)]
 struct RawConfig {
     #[serde(default)]
@@ -60,6 +79,7 @@ struct RawConfig {
     #[serde(default)]
     instances: Vec<RawInstance>,
     playback: Option<RawPlaybackConfig>,
+    media_probe: Option<RawMediaProbeConfig>,
 }
 
 #[derive(Deserialize)]
@@ -106,6 +126,20 @@ struct RawInstance {
     #[serde(default)]
     external_url: Option<Url>,
     api_key_env: String,
+}
+
+#[derive(Deserialize)]
+struct RawMediaProbeConfig {
+    /// Optional: omitted when this process sees media at the same paths the
+    /// *arr apps report, which is the common single-compose-stack case.
+    #[serde(default)]
+    path_mappings: Vec<RawPathMapping>,
+}
+
+#[derive(Deserialize)]
+struct RawPathMapping {
+    from: PathBuf,
+    to: PathBuf,
 }
 
 #[derive(Deserialize)]
@@ -216,6 +250,7 @@ impl RawConfig {
             .playback
             .map(|raw| validate_playback(raw, get_env))
             .transpose()?;
+        let media_probe = self.media_probe.map(validate_media_probe).transpose()?;
 
         Ok(AppConfig {
             server: ServerConfig { bind },
@@ -228,8 +263,41 @@ impl RawConfig {
             },
             instances,
             playback,
+            media_probe,
         })
     }
+}
+
+fn validate_media_probe(raw: RawMediaProbeConfig) -> Result<MediaProbeConfig> {
+    let mut seen = HashSet::new();
+    let mut path_mappings = Vec::with_capacity(raw.path_mappings.len());
+    for mapping in raw.path_mappings {
+        let from = normalize_mapped_path(mapping.from, "media_probe.path_mappings.from")?;
+        let to = normalize_mapped_path(mapping.to, "media_probe.path_mappings.to")?;
+        if !seen.insert(from.clone()) {
+            bail!(
+                "duplicate media_probe.path_mappings.from: {}",
+                from.display()
+            );
+        }
+        path_mappings.push(PathMapping { from, to });
+    }
+
+    // Longest first, so a rule for /data/media/tv still wins when a broader
+    // rule for /data was written above it.
+    path_mappings.sort_by_key(|mapping| std::cmp::Reverse(mapping.from.components().count()));
+
+    Ok(MediaProbeConfig { path_mappings })
+}
+
+/// Requires an absolute path and strips any trailing separator, so `/data` and
+/// `/data/` behave identically. A relative or empty `from` would match
+/// everything, so both are rejected rather than normalized.
+fn normalize_mapped_path(path: PathBuf, label: &str) -> Result<PathBuf> {
+    if !path.is_absolute() {
+        bail!("{label} must be an absolute path, got {:?}", path.display());
+    }
+    Ok(path.components().collect())
 }
 
 fn validate_playback(
@@ -313,7 +381,7 @@ fn validate_identifier(entity: &str, id: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{fs, path::PathBuf};
 
     use tempfile::tempdir;
     use url::Url;
@@ -505,5 +573,92 @@ api_key_env = "UNPOPULARR_TEST_UNSUPPORTED_RADARR_KEY"
         .expect_err("unsupported provider");
 
         assert!(format!("{error:#}").contains("tautulli"));
+    }
+
+    fn media_probe_config(body: &str) -> anyhow::Result<AppConfig> {
+        let directory = tempdir().expect("temp directory");
+        let path = directory.path().join("config.toml");
+        fs::write(
+            &path,
+            format!(
+                r#"
+[database]
+path = "unpopularr.db"
+
+{body}
+
+[[instances]]
+id = "radarr"
+name = "Radarr"
+kind = "radarr"
+base_url = "http://localhost:7878"
+api_key_env = "UNPOPULARR_TEST_PROBE_RADARR_KEY"
+"#
+            ),
+        )
+        .expect("write config");
+
+        AppConfig::load_from_with_env(path, |_| Ok("arr-secret".to_owned()))
+    }
+
+    #[test]
+    fn media_probe_is_off_unless_its_section_is_present() {
+        let config = media_probe_config("").expect("valid config");
+        assert!(config.media_probe.is_none());
+
+        // The section alone is a valid configuration: it means this process
+        // sees media at the same paths the *arr apps report.
+        let config = media_probe_config("[media_probe]").expect("valid config");
+        let probe = config.media_probe.expect("media probe config");
+        assert!(probe.path_mappings.is_empty());
+    }
+
+    #[test]
+    fn media_probe_mappings_are_normalized_and_sorted_longest_first() {
+        let config = media_probe_config(
+            r#"[media_probe]
+path_mappings = [
+  { from = "/data", to = "/mnt/" },
+  { from = "/data/media/tv", to = "/media/tv" },
+]"#,
+        )
+        .expect("valid config");
+
+        let mappings = config
+            .media_probe
+            .expect("media probe config")
+            .path_mappings;
+        // Declaration order does not decide which rule wins.
+        assert_eq!(mappings[0].from, PathBuf::from("/data/media/tv"));
+        assert_eq!(mappings[1].from, PathBuf::from("/data"));
+        assert_eq!(mappings[1].to, PathBuf::from("/mnt"));
+    }
+
+    #[test]
+    fn rejects_relative_empty_and_duplicate_media_probe_mappings() {
+        // A relative or empty prefix would match every path.
+        let error = media_probe_config(
+            r#"[media_probe]
+path_mappings = [{ from = "data/tv", to = "/media/tv" }]"#,
+        )
+        .expect_err("relative from");
+        assert!(format!("{error:#}").contains("absolute"));
+
+        let error = media_probe_config(
+            r#"[media_probe]
+path_mappings = [{ from = "", to = "/media/tv" }]"#,
+        )
+        .expect_err("empty from");
+        assert!(format!("{error:#}").contains("absolute"));
+
+        let error = media_probe_config(
+            r#"[media_probe]
+path_mappings = [
+  { from = "/data/tv", to = "/media/tv" },
+  { from = "/data/tv/", to = "/media/other" },
+]"#,
+        )
+        .expect_err("duplicate from");
+        assert!(format!("{error:#}").contains("duplicate"));
     }
 }

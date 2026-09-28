@@ -47,6 +47,27 @@ export function relativeTime(iso: string, now: number = Date.now()): string {
   return '—'
 }
 
+const AGE_UNITS: Array<[string, number]> = [
+  ['y', 60 * 60 * 24 * 365],
+  ['mo', 60 * 60 * 24 * 30],
+  ['d', 60 * 60 * 24],
+  ['h', 60 * 60],
+]
+
+// How long ago, compactly: "2y", "7mo", "18d", "4h". `relativeTime`'s prose
+// reads wrong in a right-aligned numeric column next to Size and Files.
+export function formatAge(iso: string, now: number = Date.now()): string {
+  const timestamp = new Date(iso).getTime()
+  if (Number.isNaN(timestamp)) return '—'
+  // A future date means clock skew or an *arr reporting one; it is not a
+  // negative age.
+  const seconds = Math.max(0, (now - timestamp) / 1000)
+  for (const [suffix, secondsInUnit] of AGE_UNITS) {
+    if (seconds >= secondsInUnit) return `${Math.floor(seconds / secondsInUnit)}${suffix}`
+  }
+  return '0d'
+}
+
 export function absoluteTime(iso: string): string {
   const date = new Date(iso)
   return Number.isNaN(date.getTime()) ? iso : date.toLocaleString()

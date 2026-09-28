@@ -201,9 +201,9 @@ impl CollectionRepository for SqliteCollectionRepository {
                         r#"
                         INSERT INTO series_snapshots (
                             instance_id, tvdb_id, title, title_slug, year,
-                            size_on_disk_bytes, file_count
+                            size_on_disk_bytes, file_count, added_at
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                         "#,
                     )
                     .bind(&instance.id)
@@ -213,6 +213,7 @@ impl CollectionRepository for SqliteCollectionRepository {
                     .bind(series.year)
                     .bind(series.size_on_disk_bytes)
                     .bind(series.file_count)
+                    .bind(series.added_at)
                     .execute(&mut *transaction)
                     .await?;
 
@@ -238,9 +239,9 @@ impl CollectionRepository for SqliteCollectionRepository {
                             r#"
                             INSERT INTO series_episode_snapshots (
                                 instance_id, tvdb_id, season_number, episode_number,
-                                title, air_date_utc, has_file, size_on_disk_bytes
+                                title, air_date_utc, has_file, size_on_disk_bytes, added_at
                             )
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                             "#,
                         )
                         .bind(&instance.id)
@@ -251,6 +252,7 @@ impl CollectionRepository for SqliteCollectionRepository {
                         .bind(episode.air_date_utc)
                         .bind(episode.has_file)
                         .bind(episode.size_on_disk_bytes)
+                        .bind(episode.added_at)
                         .execute(&mut *transaction)
                         .await?;
                     }
@@ -265,9 +267,10 @@ impl CollectionRepository for SqliteCollectionRepository {
                     sqlx::query(
                         r#"
                         INSERT INTO artist_snapshots (
-                            instance_id, musicbrainz_id, name, size_on_disk_bytes, file_count
+                            instance_id, musicbrainz_id, name, size_on_disk_bytes, file_count,
+                            added_at
                         )
-                        VALUES (?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?)
                         "#,
                     )
                     .bind(&instance.id)
@@ -275,6 +278,7 @@ impl CollectionRepository for SqliteCollectionRepository {
                     .bind(&artist.name)
                     .bind(artist.size_on_disk_bytes)
                     .bind(artist.file_count)
+                    .bind(artist.added_at)
                     .execute(&mut *transaction)
                     .await?;
 
@@ -283,9 +287,9 @@ impl CollectionRepository for SqliteCollectionRepository {
                             r#"
                             INSERT INTO artist_album_snapshots (
                                 instance_id, artist_musicbrainz_id, album_musicbrainz_id,
-                                title, size_on_disk_bytes, file_count
+                                title, size_on_disk_bytes, file_count, added_at
                             )
-                            VALUES (?, ?, ?, ?, ?, ?)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
                             "#,
                         )
                         .bind(&instance.id)
@@ -294,6 +298,7 @@ impl CollectionRepository for SqliteCollectionRepository {
                         .bind(&album.title)
                         .bind(album.size_on_disk_bytes)
                         .bind(album.file_count)
+                        .bind(album.added_at)
                         .execute(&mut *transaction)
                         .await?;
                     }
@@ -520,7 +525,7 @@ fn parse_status(value: &str) -> Result<SyncStatus> {
 
 #[cfg(test)]
 mod tests {
-    use chrono::Utc;
+    use chrono::{DateTime, TimeZone, Utc};
     use url::Url;
 
     use crate::{
@@ -552,6 +557,7 @@ mod tests {
     }
 
     fn series_snapshot(episodes: Vec<SeriesEpisodeSnapshot>) -> Snapshot {
+        let added_at = episodes.iter().filter_map(|episode| episode.added_at).min();
         Snapshot::Series(vec![SeriesSnapshot {
             tvdb_id: 7,
             title: "Series".to_owned(),
@@ -559,6 +565,7 @@ mod tests {
             year: 2020,
             size_on_disk_bytes: 512,
             file_count: 1,
+            added_at,
             seasons: vec![SeriesSeasonSnapshot {
                 season_number: 1,
                 file_count: 1,
@@ -567,7 +574,7 @@ mod tests {
         }])
     }
 
-    fn episode(season_number: i64, episode_number: i64) -> SeriesEpisodeSnapshot {
+    fn episode(season_number: i64, episode_number: i64, added_year: i32) -> SeriesEpisodeSnapshot {
         SeriesEpisodeSnapshot {
             season_number,
             episode_number,
@@ -575,6 +582,8 @@ mod tests {
             air_date_utc: None,
             has_file: true,
             size_on_disk_bytes: 512,
+            added_at: Utc.with_ymd_and_hms(added_year, 1, 1, 0, 0, 0).single(),
+            file_path: None,
         }
     }
 
@@ -607,6 +616,7 @@ mod tests {
                     size_on_disk_bytes: 100,
                     file_count: 1,
                     added_at: None,
+                    file_path: None,
                 }]),
                 Utc::now(),
             )
@@ -651,7 +661,7 @@ mod tests {
             .store_successful_snapshot(
                 run.id,
                 &instance,
-                &series_snapshot(vec![episode(1, 1), episode(1, 2)]),
+                &series_snapshot(vec![episode(1, 1, 2019), episode(1, 2, 2021)]),
                 Utc::now(),
             )
             .await
@@ -675,7 +685,7 @@ mod tests {
             .store_successful_snapshot(
                 run.id,
                 &instance,
-                &series_snapshot(vec![episode(1, 1)]),
+                &series_snapshot(vec![episode(1, 1, 2023)]),
                 Utc::now(),
             )
             .await
@@ -686,6 +696,18 @@ mod tests {
                 .await
                 .expect("episode rows");
         assert_eq!(episodes, vec![(1, 1)]);
+
+        // Acquisition dates are re-derived every sync, so the second snapshot's
+        // dates replace the first's rather than being merged with them.
+        let series_added_at: Option<DateTime<Utc>> =
+            sqlx::query_scalar("SELECT added_at FROM series_snapshots")
+                .fetch_one(&pool)
+                .await
+                .expect("series added_at");
+        assert_eq!(
+            series_added_at,
+            Utc.with_ymd_and_hms(2023, 1, 1, 0, 0, 0).single()
+        );
 
         repository
             .reconcile_instances(&[])
@@ -728,6 +750,7 @@ mod tests {
                     size_on_disk_bytes: 100,
                     file_count: 1,
                     added_at: None,
+                    file_path: None,
                 }]),
                 Utc::now(),
             )
@@ -791,11 +814,14 @@ mod tests {
                     name: "Artist".to_owned(),
                     size_on_disk_bytes: 800,
                     file_count: 5,
+                    added_at: None,
+                    path: None,
                     albums: vec![ArtistAlbumSnapshot {
                         musicbrainz_id: "album-1".to_owned(),
                         title: "Album One".to_owned(),
                         size_on_disk_bytes: 800,
                         file_count: 5,
+                        added_at: None,
                     }],
                 }]),
                 Utc::now(),

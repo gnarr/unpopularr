@@ -10,6 +10,7 @@ const series = [
     tvdbId: 7777,
     title: 'Mock Show',
     year: 2020,
+    added: '2023-02-01T00:00:00Z',
     statistics: { episodeFileCount: 3, sizeOnDisk: 3000 },
     seasons: [
       { seasonNumber: 0, statistics: { episodeFileCount: 1 } },
@@ -20,11 +21,11 @@ const series = [
 ]
 
 const episodes = [
-  { seasonNumber: 0, episodeNumber: 1, title: 'Special', hasFile: true, episodeFile: { size: 111 } },
-  { seasonNumber: 1, episodeNumber: 1, title: 'Pilot', airDateUtc: '2020-01-01T00:00:00Z', hasFile: true, episodeFile: { size: 1000 } },
-  { seasonNumber: 1, episodeNumber: 2, title: 'Growth', airDateUtc: '2020-01-08T00:00:00Z', hasFile: true, episodeFile: { size: 1200 } },
+  { seasonNumber: 0, episodeNumber: 1, title: 'Special', hasFile: true, episodeFile: { size: 111, dateAdded: '2018-01-01T00:00:00Z', path: '/data/media/tv/Mock Show/s00e01.mkv' } },
+  { seasonNumber: 1, episodeNumber: 1, title: 'Pilot', airDateUtc: '2020-01-01T00:00:00Z', hasFile: true, episodeFile: { size: 1000, dateAdded: '2021-03-04T00:00:00Z', path: '/data/media/tv/Mock Show/s01e01.mkv' } },
+  { seasonNumber: 1, episodeNumber: 2, title: 'Growth', airDateUtc: '2020-01-08T00:00:00Z', hasFile: true, episodeFile: { size: 1200, dateAdded: '2022-05-06T00:00:00Z', path: '/data/media/tv/Mock Show/s01e02.mkv' } },
   { seasonNumber: 1, episodeNumber: 3, title: 'Deleted One', airDateUtc: '2020-01-15T00:00:00Z', hasFile: false },
-  { seasonNumber: 2, episodeNumber: 1, title: 'Return', airDateUtc: '2021-01-01T00:00:00Z', hasFile: true, episodeFile: { size: 800 } },
+  { seasonNumber: 2, episodeNumber: 1, title: 'Return', airDateUtc: '2021-01-01T00:00:00Z', hasFile: true, episodeFile: { size: 800, dateAdded: '2022-07-08T00:00:00Z', path: '/data/media/tv/Mock Show/s02e01.mkv' } },
   { seasonNumber: 2, episodeNumber: 2, title: 'Unaired Finale', airDateUtc: '2099-01-01T00:00:00Z', hasFile: false },
 ]
 
@@ -37,6 +38,7 @@ const movies = [
     // Added long before the single Tautulli play, so the per-month plot spans
     // an availability window with one busy month and the rest empty.
     added: '2025-01-10T00:00:00Z',
+    movieFile: { dateAdded: '2025-01-12T00:00:00Z', path: '/data/media/movies/mock.mkv' },
     hasFile: true,
     sizeOnDisk: 2500,
     statistics: { movieFileCount: 1, sizeOnDisk: 2500 },
@@ -49,6 +51,8 @@ const artists = [
     id: 3,
     artistName: 'Mock Artist',
     foreignArtistId: ARTIST_MBID,
+    added: '2024-04-01T00:00:00Z',
+    path: '/data/media/music/Mock Artist',
     statistics: { trackFileCount: 12, sizeOnDisk: 4800 },
   },
 ]
@@ -57,6 +61,7 @@ const albums = [
     artistId: 3,
     foreignAlbumId: 'bbbbbbbb-1111-2222-3333-444444444444',
     title: 'First Album',
+    added: '2020-09-09T00:00:00Z',
     statistics: { trackFileCount: 10, sizeOnDisk: 4000 },
   },
   {
