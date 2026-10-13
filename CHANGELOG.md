@@ -2,6 +2,14 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [0.11.0](https://github.com/gnarr/unpopularr/compare/c97122013d3f5854374a764ec3c34d7efb0d60c0..0.11.0) - 2026-10-13
+#### Features
+- (**catalog**) add popularity scoring - ([c971220](https://github.com/gnarr/unpopularr/commit/c97122013d3f5854374a764ec3c34d7efb0d60c0)) - Gunnar Cortes
+#### Bug Fixes
+- (**catalog**) skip active days for removed items - ([2411a5c](https://github.com/gnarr/unpopularr/commit/2411a5c9dcb0096f98eb72077b301d87313da2d9)) - Gunnar Cortes
+
+- - -
+
 ## [0.10.0](https://github.com/gnarr/unpopularr/compare/0b94dd2db5c64c49748a69de997730ccd60e1250..0.10.0) - 2026-09-28
 #### Features
 - add media age - ([0b94dd2](https://github.com/gnarr/unpopularr/commit/0b94dd2db5c64c49748a69de997730ccd60e1250)) - Gunnar Cortes
