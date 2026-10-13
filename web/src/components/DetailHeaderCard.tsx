@@ -3,6 +3,7 @@ import { InstanceChips } from './InstanceChips'
 import { StatCard } from './StatCard'
 import { TypeBadge } from './TypeBadge'
 import { absoluteTime, formatBytes, formatDuration, relativeTime } from '../lib/format'
+import { POPULARITY_HINT } from '../lib/content'
 
 interface DetailHeaderCardProps {
   type: ContentType
@@ -15,6 +16,8 @@ interface DetailHeaderCardProps {
   // Oldest acquisition date across instances; null when nothing reports one.
   addedAt: string | null
   playback: PlaybackMetrics | null
+  // Null when playback is unavailable, like `playback`.
+  popularityScore: number | null
 }
 
 export function DetailHeaderCard({
@@ -26,6 +29,7 @@ export function DetailHeaderCard({
   fileCount,
   addedAt,
   playback,
+  popularityScore,
 }: DetailHeaderCardProps) {
   const neverPlayed = playback !== null && playback.playCount === 0
 
@@ -40,7 +44,7 @@ export function DetailHeaderCard({
           <InstanceChips instances={instances} />
         </div>
       </header>
-      <div className="grid grid-cols-2 gap-4 p-4 sm:grid-cols-4">
+      <div className="grid grid-cols-2 gap-4 p-4 sm:grid-cols-5">
         <StatCard label="Total size" value={formatBytes(sizeOnDiskBytes)} />
         <StatCard label="Files" value={fileCount.toLocaleString()} />
         {playback !== null && (
@@ -55,6 +59,9 @@ export function DetailHeaderCard({
               value={neverPlayed ? '—' : formatDuration(playback.playDurationSeconds)}
             />
           </>
+        )}
+        {popularityScore !== null && (
+          <StatCard label="Popularity" value={`${popularityScore} / 100`} hint={POPULARITY_HINT} />
         )}
       </div>
       {(addedAt !== null || playback?.lastPlayedAt) && (

@@ -59,6 +59,13 @@ export function isNeverPlayed(item: ContentItem): boolean {
   return item.playback !== null && item.playback.playCount === 0
 }
 
+// Tooltip shared by the catalog column and the detail stat card. Mirrors the
+// README's "Popularity score" section; the backend computes the score.
+export const POPULARITY_HINT =
+  'How much this is used, 0–100. Each day with playback counts once, and its weight ' +
+  'halves every 180 days. Watch time, size and age are ignored. 0 means no recorded ' +
+  'playback lately, not proof that nobody watched.'
+
 export function playbackAvailable(items: ContentItem[]): boolean {
   return items.some((item) => item.playback !== null)
 }

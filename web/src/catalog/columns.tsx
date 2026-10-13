@@ -1,7 +1,14 @@
 import { createColumnHelper, type ColumnDef, type RowData } from '@tanstack/react-table'
 import { Link } from 'react-router'
 import type { ContentItem } from '../api/types'
-import { detailCount, detailLabel, detailPath, isNeverPlayed, year } from '../lib/content'
+import {
+  POPULARITY_HINT,
+  detailCount,
+  detailLabel,
+  detailPath,
+  isNeverPlayed,
+  year,
+} from '../lib/content'
 import { absoluteTime, formatAge, formatBytes, formatDuration, relativeTime } from '../lib/format'
 import { TypeBadge } from '../components/TypeBadge'
 import { InstanceChips } from '../components/InstanceChips'
@@ -146,5 +153,22 @@ export function buildColumns(hasPlayback: boolean): Array<ColumnDef<ContentItem,
         },
       },
     ),
+    helper.accessor((item) => item.popularityScore ?? undefined, {
+      id: 'popularity',
+      header: () => <span title={POPULARITY_HINT}>Popularity</span>,
+      sortUndefined: 'last',
+      meta: { align: 'right' },
+      cell: (ctx) => {
+        const score = ctx.row.original.popularityScore
+        if (score === null) {
+          return (
+            <span className="text-slate-600" title="Playback data unavailable">
+              —
+            </span>
+          )
+        }
+        return <span className="tabular-nums">{score}</span>
+      },
+    }),
   ]
 }

@@ -38,6 +38,7 @@ describe('getSeries', () => {
       ],
       instanceDetails: [],
       playback: null,
+      popularityScore: null,
       unattributedPlayCount: null,
       userPlayback: [],
       unknownUserPlayCount: null,
@@ -68,6 +69,7 @@ describe('getMovie', () => {
       instances: [],
       instanceDetails: [],
       playback: null,
+      popularityScore: null,
       addedAt: null,
       dailyPlayback: [],
       userPlayback: [],
@@ -102,6 +104,7 @@ describe('getArtist', () => {
       ],
       instanceDetails: [],
       playback: null,
+      popularityScore: null,
       userPlayback: [],
       unknownUserPlayCount: null,
     }

@@ -32,6 +32,7 @@ const SORTABLE_COLUMN_IDS = new Set<string>([
   'plays',
   'watchTime',
   'lastPlayed',
+  'popularity',
 ])
 
 export const DEFAULT_SETTINGS: CatalogSettings = {
