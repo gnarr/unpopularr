@@ -361,9 +361,22 @@ impl CatalogRepository for SqliteCatalogRepository {
                 });
             }
 
-            let rows = sqlx::query(active_days_sql!())
-                .fetch_all(&self.pool)
-                .await?;
+            // Playback history outlives catalog snapshots, so skip removed
+            // items instead of materializing days nothing will score.
+            let rows = sqlx::query(concat!(
+                "SELECT content_type, content_id, day FROM (",
+                active_days_sql!(),
+                r#")
+                WHERE (content_type = 'movie' AND content_id IN (
+                          SELECT CAST(tmdb_id AS TEXT) FROM movie_snapshots))
+                   OR (content_type = 'series' AND content_id IN (
+                          SELECT CAST(tvdb_id AS TEXT) FROM series_snapshots))
+                   OR (content_type = 'artist' AND content_id IN (
+                          SELECT musicbrainz_id FROM artist_snapshots))
+                "#
+            ))
+            .fetch_all(&self.pool)
+            .await?;
             for row in rows {
                 let day = parse_day(&row)?;
                 item_playback(&mut playback, &row)?.active_days.push(day);
@@ -897,10 +910,38 @@ mod tests {
             "#,
         )
         .await;
+        seed(
+            &pool,
+            r#"
+            INSERT INTO instances (id, name, kind, config_order, last_successful_sync_at)
+            VALUES ('a', 'a', 'radarr', 0, '2026-01-03T00:00:00Z')
+            "#,
+        )
+        .await;
+        for sql in [
+            r#"
+            INSERT INTO movie_snapshots
+                (instance_id, tmdb_id, title, year, size_on_disk_bytes, file_count)
+            VALUES ('a', 42, 'Movie', 2020, 100, 1)
+            "#,
+            r#"
+            INSERT INTO series_snapshots
+                (instance_id, tvdb_id, title, year, size_on_disk_bytes, file_count)
+            VALUES ('a', 42, 'Show', 2020, 100, 1)
+            "#,
+            r#"
+            INSERT INTO artist_snapshots
+                (instance_id, musicbrainz_id, name, size_on_disk_bytes, file_count)
+            VALUES ('a', 'mbid', 'Artist', 100, 1)
+            "#,
+        ] {
+            seed(&pool, sql).await;
+        }
         // Movie 42: two sessions bracketing one UTC day, then the next day's
         // first second twice (separate Tautulli rows, same timestamp), once
-        // without a user. The series and artist share an ID string with
-        // nothing, proving rows are keyed per content type.
+        // without a user. The series shares an ID string with the movie,
+        // proving rows are keyed per content type. Movie 99 has history but
+        // has left the catalog.
         seed(
             &pool,
             r#"
@@ -913,7 +954,8 @@ mod tests {
                    ('plex', 3, 'movie', '42', '2026-01-02T00:00:00Z', 60, 7, 'Alice'),
                    ('plex', 4, 'movie', '42', '2026-01-02T00:00:00Z', 60, NULL, NULL),
                    ('plex', 5, 'series', '42', '2026-01-03T12:00:00Z', 60, 7, 'Alice'),
-                   ('plex', 6, 'artist', 'mbid', '2025-12-31T23:59:59Z', 60, NULL, NULL)
+                   ('plex', 6, 'artist', 'mbid', '2025-12-31T23:59:59Z', 60, NULL, NULL),
+                   ('plex', 7, 'movie', '99', '2026-01-01T12:00:00Z', 60, NULL, NULL)
             "#,
         )
         .await;
@@ -930,6 +972,7 @@ mod tests {
             playback.artists["mbid"].active_days,
             vec![day("2025-12-31")]
         );
+        assert!(!playback.movies.contains_key(&99));
     }
 
     #[tokio::test]
