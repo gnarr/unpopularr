@@ -39,6 +39,24 @@ macro_rules! active_days_sql {
     };
 }
 
+/// Active days for every item currently in the catalog. Playback history
+/// outlives catalog snapshots, so removed items are skipped rather than
+/// materializing days nothing will score. SQLite pushes this outer filter into
+/// both `UNION` arms, so events are only read through the content index for
+/// current items (guarded by a query-plan test).
+const CATALOG_ACTIVE_DAYS_SQL: &str = concat!(
+    "SELECT content_type, content_id, day FROM (",
+    active_days_sql!(),
+    r#")
+    WHERE (content_type = 'movie' AND content_id IN (
+              SELECT CAST(tmdb_id AS TEXT) FROM movie_snapshots))
+       OR (content_type = 'series' AND content_id IN (
+              SELECT CAST(tvdb_id AS TEXT) FROM series_snapshots))
+       OR (content_type = 'artist' AND content_id IN (
+              SELECT musicbrainz_id FROM artist_snapshots))
+    "#
+);
+
 #[derive(Clone)]
 pub struct SqliteCatalogRepository {
     pool: SqlitePool,
@@ -361,22 +379,9 @@ impl CatalogRepository for SqliteCatalogRepository {
                 });
             }
 
-            // Playback history outlives catalog snapshots, so skip removed
-            // items instead of materializing days nothing will score.
-            let rows = sqlx::query(concat!(
-                "SELECT content_type, content_id, day FROM (",
-                active_days_sql!(),
-                r#")
-                WHERE (content_type = 'movie' AND content_id IN (
-                          SELECT CAST(tmdb_id AS TEXT) FROM movie_snapshots))
-                   OR (content_type = 'series' AND content_id IN (
-                          SELECT CAST(tvdb_id AS TEXT) FROM series_snapshots))
-                   OR (content_type = 'artist' AND content_id IN (
-                          SELECT musicbrainz_id FROM artist_snapshots))
-                "#
-            ))
-            .fetch_all(&self.pool)
-            .await?;
+            let rows = sqlx::query(CATALOG_ACTIVE_DAYS_SQL)
+                .fetch_all(&self.pool)
+                .await?;
             for row in rows {
                 let day = parse_day(&row)?;
                 item_playback(&mut playback, &row)?.active_days.push(day);
@@ -1051,5 +1056,32 @@ mod tests {
         assert_eq!(days("43").await, vec![day("2024-02-01")]);
         assert!(days("44").await.is_empty());
         assert!(days("45").await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn catalog_active_days_only_read_events_of_current_items() {
+        let pool = database::test_pool().await;
+        let plan = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "EXPLAIN QUERY PLAN {CATALOG_ACTIVE_DAYS_SQL}"
+        )))
+        .fetch_all(&pool)
+        .await
+        .expect("query plan")
+        .iter()
+        .map(|row| row.try_get::<String, _>("detail"))
+        .collect::<Result<Vec<_>, _>>()
+        .expect("plan details");
+
+        // A full scan would read, and deduplicate, every removed item's
+        // history before the catalog filter applies.
+        assert!(
+            !plan.iter().any(|step| step.starts_with("SCAN events")),
+            "{plan:#?}"
+        );
+        assert!(
+            plan.iter().any(|step| step
+                .starts_with("SEARCH events USING INDEX idx_playback_events_content_item")),
+            "{plan:#?}"
+        );
     }
 }
