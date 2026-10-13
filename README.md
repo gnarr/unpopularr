@@ -106,6 +106,55 @@ It logs one line per instance per sync, and warns when no path matched a
 mapping rule or no file could be read — the usual sign of a wrong prefix or a
 missing mount.
 
+### Popularity score
+
+With playback configured, every movie, series, and artist carries a popularity
+score from 0 to 100. It answers "is anyone using this?" from playback history,
+so you can spot candidates for cleanup. It never deletes or changes anything.
+
+The score counts **active days**: UTC calendar days with at least one playback
+session. Five sessions on one day count as one active day. Each active day
+weighs less as it ages, halving every 180 days:
+
+```text
+weight     = 2^(-age_days / 180)       age_days: whole UTC days before today
+activity   = sum of weights over all distinct active days
+popularity = round(100 * (1 - e^(-activity / 5)))
+```
+
+`round` rounds halves away from zero. A day in the future (clock skew) counts
+as today. The score is computed on every request against the current UTC
+date, so it decays day by day even when no new playback sync runs. It is never
+stored.
+
+| History | Score |
+| --- | --- |
+| No recorded playback | 0 |
+| One active day today | 18 |
+| One active day 180 days ago | 10 |
+| One active day 360 days ago | 5 |
+| Three active days this week | about 45 |
+| Ten active days in the last two weeks | about 86 |
+| One active day three years ago | 0 |
+
+The score ignores watch time, disk size, media age, and how many sessions
+happened on a day. Movies, series, and artists use the same formula; for a
+series every episode play counts toward the series, for an artist every track.
+Plays without a known user count like any other.
+
+It only knows what Tautulli recorded. A score of 0 on media older than your
+Tautulli install means "no recorded playback", not proof that nobody watched
+it. Without a configured and successfully synced playback source the score is
+`null` (unavailable), never 0.
+
+Aggregate playback imported before individual sessions were stored (the legacy
+snapshots) has no per-session dates. Such an aggregate with at least one play
+and a last-played time contributes one synthetic active day on that date,
+decaying like any other day, so it adds at most 18 points and fades over time.
+It merges with a real active day on the same date, and aggregates without a
+last-played time contribute nothing. Sessions already covered by a legacy
+aggregate are not counted again.
+
 ## Web UI
 
 The binary also serves a small web UI at the same address as the API. Open the
@@ -152,7 +201,8 @@ Only aggregated entries with at least one file are returned.
       "playCount": 4,
       "playDurationSeconds": 7200,
       "lastPlayedAt": "2026-06-24T12:00:00Z"
-    }
+    },
+    "popularityScore": 22
   }
 ]
 ```
@@ -160,6 +210,12 @@ Only aggregated entries with at least one file are returned.
 `playback` is `null` when playback collection is disabled or no playback sync
 has completed successfully. After a successful sync, content with no matched
 history has zero counts and a `null` `lastPlayedAt`.
+
+`popularityScore` follows the same rule: `null` while playback is unavailable,
+otherwise an integer from 0 to 100 (see [Popularity score](#popularity-score)).
+The movie, series, and artist detail endpoints (`/api/v1/movies/{tmdbId}`,
+`/api/v1/series/{tvdbId}`, `/api/v1/artists/{musicBrainzId}`) return the same
+`popularityScore` for the same item.
 
 ### Start a sync
 

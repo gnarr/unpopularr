@@ -49,6 +49,9 @@ interface ContentBase {
   // `null` means playback is unavailable (no provider configured, or no sync yet).
   // When available, never-played content has playCount 0 and lastPlayedAt null.
   playback: PlaybackMetrics | null
+  // Recency-weighted 0–100 score of the days with playback. `null` when
+  // playback is unavailable (as with `playback`); 0 means none recorded lately.
+  popularityScore: number | null
 }
 
 export interface MovieItem extends ContentBase {
@@ -119,6 +122,9 @@ export interface SeriesDetails {
   seasons: SeriesSeasonDetail[]
   instanceDetails: SeriesInstanceDetail[]
   playback: PlaybackMetrics | null
+  // Recency-weighted 0–100 score of the days with playback. `null` when
+  // playback is unavailable (as with `playback`); 0 means none recorded lately.
+  popularityScore: number | null
   // Series-level plays with no episode cell to land on (legacy aggregates,
   // events without positions, specials). Null when playback is unavailable.
   unattributedPlayCount: number | null
@@ -146,6 +152,9 @@ export interface MovieDetails {
   instances: InstanceReference[]
   instanceDetails: MovieInstanceDetail[]
   playback: PlaybackMetrics | null
+  // Recency-weighted 0–100 score of the days with playback. `null` when
+  // playback is unavailable (as with `playback`); 0 means none recorded lately.
+  popularityScore: number | null
   // Oldest acquisition date across instances, and the plot's left edge.
   // `null` until a re-sync populates it (fall back to the first played day).
   addedAt: string | null
@@ -188,6 +197,9 @@ export interface ArtistDetails {
   albums: ArtistAlbumDetail[]
   instanceDetails: ArtistInstanceDetail[]
   playback: PlaybackMetrics | null
+  // Recency-weighted 0–100 score of the days with playback. `null` when
+  // playback is unavailable (as with `playback`); 0 means none recorded lately.
+  popularityScore: number | null
   // Per-user playback, most plays first. Empty when playback is unavailable.
   userPlayback: UserPlayback[]
   // Plays not attributable to a user (legacy aggregates, events synced before

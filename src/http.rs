@@ -946,6 +946,98 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn popularity_score_is_consistent_across_catalog_and_details() {
+        let (app, pool) = minimal_app_with_pool().await;
+        insert_instances(&pool, "radarr").await;
+        for sql in [
+            r#"
+            INSERT INTO movie_snapshots
+                (instance_id, tmdb_id, title, year, size_on_disk_bytes, file_count)
+            VALUES ('a', 42, 'Movie', 2020, 100, 1)
+            "#,
+            r#"
+            INSERT INTO series_snapshots
+                (instance_id, tvdb_id, title, year, size_on_disk_bytes, file_count)
+            VALUES ('a', 55, 'Show', 2020, 100, 1)
+            "#,
+            r#"
+            INSERT INTO artist_snapshots
+                (instance_id, musicbrainz_id, name, size_on_disk_bytes, file_count)
+            VALUES ('a', 'artist-1', 'Artist', 100, 1)
+            "#,
+        ] {
+            sqlx::query(sql)
+                .execute(&pool)
+                .await
+                .expect("insert content");
+        }
+        let items = [
+            ("movie", "42", "/api/v1/movies/42"),
+            ("series", "55", "/api/v1/series/55"),
+            ("artist", "artist-1", "/api/v1/artists/artist-1"),
+        ];
+        let scores = || async {
+            let (_, content) = get_json(&app, "/api/v1/content").await;
+            let mut scores = Vec::new();
+            for (content_type, _, detail_uri) in items {
+                let listed = content
+                    .as_array()
+                    .expect("content array")
+                    .iter()
+                    .find(|item| item["contentType"] == content_type)
+                    .expect("listed item")["popularityScore"]
+                    .clone();
+                let (_, details) = get_json(&app, detail_uri).await;
+                assert_eq!(listed, details["popularityScore"], "{content_type}");
+                scores.push(listed);
+            }
+            scores
+        };
+
+        // Unavailable playback is null, never zero: first with no source,
+        // then with a source that has not completed a sync.
+        assert!(scores().await.iter().all(Value::is_null));
+        sqlx::query("INSERT INTO playback_sources (id, provider) VALUES ('plex', 'tautulli')")
+            .execute(&pool)
+            .await
+            .expect("insert playback source");
+        assert!(scores().await.iter().all(Value::is_null));
+
+        sqlx::query("UPDATE playback_sources SET last_successful_sync_at = ?")
+            .bind(chrono::Utc::now())
+            .execute(&pool)
+            .await
+            .expect("mark playback synced");
+        assert!(scores().await.iter().all(|score| score == 0));
+
+        // Today plus exactly one half-life ago weigh 1 + 0.5:
+        // 100 · (1 − e^(−1.5/5)) = 25.92.
+        let mut row_id = 0;
+        for (content_type, content_id, _) in items {
+            for age_days in [0, 180] {
+                row_id += 1;
+                sqlx::query(
+                    r#"
+                    INSERT INTO playback_events (
+                        source_id, source_row_id, content_type, content_id,
+                        played_at, duration_seconds
+                    )
+                    VALUES ('plex', ?1, ?2, ?3, ?4, 60)
+                    "#,
+                )
+                .bind(row_id)
+                .bind(content_type)
+                .bind(content_id)
+                .bind(chrono::Utc::now() - chrono::Days::new(age_days))
+                .execute(&pool)
+                .await
+                .expect("insert playback event");
+            }
+        }
+        assert!(scores().await.iter().all(|score| score == 26));
+    }
+
+    #[tokio::test]
     async fn movie_details_returns_json_not_found_for_unknown_tmdb() {
         let app = minimal_app().await;
         let (status, error) = get_json(&app, "/api/v1/movies/999").await;

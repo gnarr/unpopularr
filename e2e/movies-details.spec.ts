@@ -31,6 +31,10 @@ test('shows size, file, and playback stats without an instance table', async ({ 
   // "Plays" also names a column in the watched-by table; target the stat card.
   await expect(page.getByText('Plays', { exact: true }).first()).toBeVisible()
   await expect(page.getByText('1h 30m')).toBeVisible()
+  // The mock play has a fixed date, so its score decays with the calendar;
+  // assert the card and its shape rather than a value.
+  await expect(page.getByText('Popularity', { exact: true })).toBeVisible()
+  await expect(page.getByText(/^\d{1,3} \/ 100$/)).toBeVisible()
   await expect(page.getByText('Last played')).toBeVisible()
   await expect(page.getByText('Added')).toBeVisible()
 

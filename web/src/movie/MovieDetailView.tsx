@@ -62,6 +62,7 @@ function MovieDetail({ data }: { data: MovieDetails }) {
         fileCount={data.fileCount}
         addedAt={data.addedAt}
         playback={data.playback}
+        popularityScore={data.popularityScore}
       />
 
       {data.playback !== null && data.dailyPlayback.length > 0 && (

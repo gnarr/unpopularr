@@ -1,8 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::Serialize;
 
+use super::popularity::popularity_score;
 use crate::collection::earliest;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -31,9 +32,18 @@ pub struct CatalogSources {
 #[derive(Clone, Debug, Default)]
 pub struct CatalogPlayback {
     pub available: bool,
-    pub movies: BTreeMap<i64, PlaybackMetrics>,
-    pub series: BTreeMap<i64, PlaybackMetrics>,
-    pub artists: BTreeMap<String, PlaybackMetrics>,
+    pub movies: BTreeMap<i64, ItemPlayback>,
+    pub series: BTreeMap<i64, ItemPlayback>,
+    pub artists: BTreeMap<String, ItemPlayback>,
+}
+
+/// One item's playback as the catalog list reads it.
+#[derive(Clone, Debug, Default)]
+pub struct ItemPlayback {
+    /// The stored aggregate; `None` when the item has no snapshot row.
+    pub metrics: Option<PlaybackMetrics>,
+    /// Distinct UTC days with playback, the input to the popularity score.
+    pub active_days: Vec<NaiveDate>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -170,6 +180,8 @@ pub struct SeriesDetailsSources {
     pub episodes: Vec<SeriesEpisodeFile>,
     pub episode_playback: Vec<SeriesEpisodePlayback>,
     pub user_playback: Vec<UserPlayback>,
+    /// Distinct UTC days with playback, the input to the popularity score.
+    pub active_days: Vec<NaiveDate>,
     pub playback_available: bool,
     pub playback: Option<PlaybackMetrics>,
 }
@@ -183,6 +195,8 @@ pub struct MovieDetailsSources {
     /// unavailable or the movie has never been played.
     pub daily_playback: Vec<DailyPlayback>,
     pub user_playback: Vec<UserPlayback>,
+    /// Distinct UTC days with playback, the input to the popularity score.
+    pub active_days: Vec<NaiveDate>,
     pub playback_available: bool,
     pub playback: Option<PlaybackMetrics>,
 }
@@ -206,6 +220,8 @@ pub struct ArtistDetailsSources {
     pub instances: Vec<ArtistSource>,
     pub albums: Vec<ArtistAlbumFile>,
     pub user_playback: Vec<UserPlayback>,
+    /// Distinct UTC days with playback, the input to the popularity score.
+    pub active_days: Vec<NaiveDate>,
     pub playback_available: bool,
     pub playback: Option<PlaybackMetrics>,
 }
@@ -264,6 +280,9 @@ pub struct SeriesDetails {
     pub seasons: Vec<SeriesSeasonDetail>,
     pub instance_details: Vec<SeriesInstanceDetail>,
     pub playback: Option<PlaybackMetrics>,
+    /// Recency-weighted 0–100 score of active playback days (see
+    /// [`popularity_score`]). `None` when playback is unavailable.
+    pub popularity_score: Option<u8>,
     /// Series-level plays not attributable to an episode cell: legacy
     /// aggregates, events without episode positions, and specials. `None` when
     /// playback is unavailable.
@@ -296,6 +315,9 @@ pub struct MovieDetails {
     pub instances: Vec<InstanceReference>,
     pub instance_details: Vec<MovieInstanceDetail>,
     pub playback: Option<PlaybackMetrics>,
+    /// Recency-weighted 0–100 score of active playback days (see
+    /// [`popularity_score`]). `None` when playback is unavailable.
+    pub popularity_score: Option<u8>,
     /// Oldest acquisition hint across instances, and the plot's left edge.
     /// `None` until a re-sync populates it.
     pub added_at: Option<DateTime<Utc>>,
@@ -346,6 +368,9 @@ pub struct ArtistDetails {
     pub albums: Vec<ArtistAlbumDetail>,
     pub instance_details: Vec<ArtistInstanceDetail>,
     pub playback: Option<PlaybackMetrics>,
+    /// Recency-weighted 0–100 score of active playback days (see
+    /// [`popularity_score`]). `None` when playback is unavailable.
+    pub popularity_score: Option<u8>,
     /// Per-user playback, most plays first. Empty when playback is unavailable.
     pub user_playback: Vec<UserPlayback>,
     /// Plays not attributable to a user: legacy aggregates and events stored
@@ -369,6 +394,7 @@ pub enum ContentItem {
         tmdb_id: i64,
         year: i64,
         playback: Option<PlaybackMetrics>,
+        popularity_score: Option<u8>,
     },
     Series {
         display_name: String,
@@ -380,6 +406,7 @@ pub enum ContentItem {
         year: i64,
         seasons_with_files: i64,
         playback: Option<PlaybackMetrics>,
+        popularity_score: Option<u8>,
     },
     Artist {
         display_name: String,
@@ -390,6 +417,7 @@ pub enum ContentItem {
         music_brainz_id: String,
         albums_with_files: i64,
         playback: Option<PlaybackMetrics>,
+        popularity_score: Option<u8>,
     },
 }
 
@@ -428,11 +456,26 @@ fn deep_link_path(route_base: &str, slug: &str) -> Option<String> {
     (!slug.is_empty()).then(|| format!("{route_base}/{slug}"))
 }
 
-pub fn aggregate(mut sources: CatalogSources) -> Vec<ContentItem> {
+/// `today` is the UTC date every popularity score in the list is measured
+/// against, captured once so all items age consistently.
+pub fn aggregate(mut sources: CatalogSources, today: NaiveDate) -> Vec<ContentItem> {
     sources.movies.sort_by_key(|source| source.config_order);
     sources.series.sort_by_key(|source| source.config_order);
     sources.artists.sort_by_key(|source| source.config_order);
     let playback = sources.playback;
+    let summarize = |item: Option<&ItemPlayback>| {
+        (
+            playback_metrics(
+                playback.available,
+                item.and_then(|item| item.metrics.as_ref()),
+            ),
+            popularity(
+                playback.available,
+                item.map_or(&[], |item| &item.active_days),
+                today,
+            ),
+        )
+    };
 
     let mut movies = BTreeMap::<i64, MovieAggregate>::new();
     for source in sources.movies {
@@ -508,6 +551,7 @@ pub fn aggregate(mut sources: CatalogSources) -> Vec<ContentItem> {
 
     let mut content = Vec::with_capacity(movies.len() + series.len() + artists.len());
     content.extend(movies.into_iter().filter_map(|(tmdb_id, movie)| {
+        let (metrics, popularity_score) = summarize(playback.movies.get(&tmdb_id));
         (movie.file_count > 0).then_some(ContentItem::Movie {
             display_name: movie.title,
             size_on_disk_bytes: movie.size_on_disk_bytes,
@@ -516,10 +560,12 @@ pub fn aggregate(mut sources: CatalogSources) -> Vec<ContentItem> {
             added_at: movie.added_at,
             tmdb_id,
             year: movie.year,
-            playback: playback_metrics(playback.available, playback.movies.get(&tmdb_id)),
+            playback: metrics,
+            popularity_score,
         })
     }));
     content.extend(series.into_iter().filter_map(|(tvdb_id, series)| {
+        let (metrics, popularity_score) = summarize(playback.series.get(&tvdb_id));
         (series.file_count > 0).then_some(ContentItem::Series {
             display_name: series.title,
             size_on_disk_bytes: series.size_on_disk_bytes,
@@ -529,11 +575,12 @@ pub fn aggregate(mut sources: CatalogSources) -> Vec<ContentItem> {
             tvdb_id,
             year: series.year,
             seasons_with_files: i64::try_from(series.season_numbers.len()).unwrap_or(i64::MAX),
-            playback: playback_metrics(playback.available, playback.series.get(&tvdb_id)),
+            playback: metrics,
+            popularity_score,
         })
     }));
     content.extend(artists.into_iter().filter_map(|(music_brainz_id, artist)| {
-        let metrics = playback_metrics(playback.available, playback.artists.get(&music_brainz_id));
+        let (metrics, popularity_score) = summarize(playback.artists.get(&music_brainz_id));
         (artist.file_count > 0).then_some(ContentItem::Artist {
             display_name: artist.name,
             size_on_disk_bytes: artist.size_on_disk_bytes,
@@ -544,6 +591,7 @@ pub fn aggregate(mut sources: CatalogSources) -> Vec<ContentItem> {
             albums_with_files: i64::try_from(artist.album_musicbrainz_ids.len())
                 .unwrap_or(i64::MAX),
             playback: metrics,
+            popularity_score,
         })
     }));
 
@@ -563,7 +611,10 @@ pub fn aggregate(mut sources: CatalogSources) -> Vec<ContentItem> {
 /// files appear in the header `instances` list. `instance_details` retains every
 /// instance (including empty ones) and per-season file counts are summed across
 /// instances.
-pub fn aggregate_series(mut sources: SeriesDetailsSources) -> Option<SeriesDetails> {
+pub fn aggregate_series(
+    mut sources: SeriesDetailsSources,
+    today: NaiveDate,
+) -> Option<SeriesDetails> {
     sources.instances.sort_by_key(|source| source.config_order);
     let first = sources.instances.first()?;
     let tvdb_id = first.tvdb_id;
@@ -693,6 +744,7 @@ pub fn aggregate_series(mut sources: SeriesDetailsSources) -> Option<SeriesDetai
         .collect();
 
     let playback = playback_metrics(sources.playback_available, sources.playback.as_ref());
+    let popularity_score = popularity(sources.playback_available, &sources.active_days, today);
     // Clamped: re-synced events inside the legacy aggregate's covered window can
     // be counted both per episode and in the series total's legacy share.
     let unattributed_play_count = playback
@@ -712,6 +764,7 @@ pub fn aggregate_series(mut sources: SeriesDetailsSources) -> Option<SeriesDetai
         seasons,
         instance_details,
         playback,
+        popularity_score,
         unattributed_play_count,
         user_playback: sources.user_playback,
         unknown_user_play_count,
@@ -729,7 +782,7 @@ struct EpisodeAggregate {
 /// Fold the raw per-instance rows for one movie into the serialized
 /// [`MovieDetails`]. Mirrors [`aggregate_series`], minus the per-season data
 /// movies don't have.
-pub fn aggregate_movie(mut sources: MovieDetailsSources) -> Option<MovieDetails> {
+pub fn aggregate_movie(mut sources: MovieDetailsSources, today: NaiveDate) -> Option<MovieDetails> {
     sources.instances.sort_by_key(|source| source.config_order);
     let first = sources.instances.first()?;
     let tmdb_id = first.tmdb_id;
@@ -758,6 +811,7 @@ pub fn aggregate_movie(mut sources: MovieDetailsSources) -> Option<MovieDetails>
     }
 
     let playback = playback_metrics(sources.playback_available, sources.playback.as_ref());
+    let popularity_score = popularity(sources.playback_available, &sources.active_days, today);
     let unknown_user_play_count =
         unknown_user_play_count(playback.as_ref(), &sources.user_playback);
 
@@ -770,6 +824,7 @@ pub fn aggregate_movie(mut sources: MovieDetailsSources) -> Option<MovieDetails>
         instances,
         instance_details,
         playback,
+        popularity_score,
         added_at,
         daily_playback: sources.daily_playback,
         user_playback: sources.user_playback,
@@ -780,7 +835,10 @@ pub fn aggregate_movie(mut sources: MovieDetailsSources) -> Option<MovieDetails>
 /// Fold the raw per-instance rows for one artist into the serialized
 /// [`ArtistDetails`]. Mirrors [`aggregate_series`], with albums in the role
 /// seasons play there: merged across instances and summed.
-pub fn aggregate_artist(mut sources: ArtistDetailsSources) -> Option<ArtistDetails> {
+pub fn aggregate_artist(
+    mut sources: ArtistDetailsSources,
+    today: NaiveDate,
+) -> Option<ArtistDetails> {
     sources.instances.sort_by_key(|source| source.config_order);
     let first = sources.instances.first()?;
     let music_brainz_id = first.musicbrainz_id.clone();
@@ -845,6 +903,7 @@ pub fn aggregate_artist(mut sources: ArtistDetailsSources) -> Option<ArtistDetai
     albums.sort_by_cached_key(|album| (album.title.to_lowercase(), album.music_brainz_id.clone()));
 
     let playback = playback_metrics(sources.playback_available, sources.playback.as_ref());
+    let popularity_score = popularity(sources.playback_available, &sources.active_days, today);
     let unknown_user_play_count =
         unknown_user_play_count(playback.as_ref(), &sources.user_playback);
 
@@ -858,6 +917,7 @@ pub fn aggregate_artist(mut sources: ArtistDetailsSources) -> Option<ArtistDetai
         albums,
         instance_details,
         playback,
+        popularity_score,
         user_playback: sources.user_playback,
         unknown_user_play_count,
     })
@@ -875,6 +935,12 @@ fn playback_metrics(available: bool, metrics: Option<&PlaybackMetrics>) -> Optio
             .cloned()
             .unwrap_or_else(PlaybackMetrics::never_played)
     })
+}
+
+/// The item's popularity, or `None` when playback is unavailable. That is
+/// distinct from 0, which means playback is known and nothing was played lately.
+fn popularity(available: bool, active_days: &[NaiveDate], today: NaiveDate) -> Option<u8> {
+    available.then(|| popularity_score(active_days.iter().copied(), today))
 }
 
 /// Plays in the item total that no user row accounts for: legacy aggregates
@@ -926,15 +992,19 @@ struct ArtistAggregate {
 mod tests {
     use std::collections::BTreeMap;
 
-    use chrono::{DateTime, Utc};
+    use chrono::{DateTime, NaiveDate, Utc};
 
     use super::{
         ArtistAlbumFile, ArtistDetailsSources, ArtistSource, CatalogPlayback, CatalogSources,
-        ContentItem, DailyPlayback, InstanceReference, MovieDetailsSources, MovieSource,
-        PlaybackMetrics, SeriesDetailsSources, SeriesEpisodeFile, SeriesEpisodePlayback,
-        SeriesSeasonDetail, SeriesSeasonFiles, SeriesSource, UserPlayback, aggregate,
-        aggregate_artist, aggregate_movie, aggregate_series,
+        ContentItem, DailyPlayback, InstanceReference, ItemPlayback, MovieDetailsSources,
+        MovieSource, PlaybackMetrics, SeriesDetailsSources, SeriesEpisodeFile,
+        SeriesEpisodePlayback, SeriesSeasonDetail, SeriesSeasonFiles, SeriesSource, UserPlayback,
+        aggregate, aggregate_artist, aggregate_movie, aggregate_series,
     };
+
+    fn today() -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 10, 13).expect("valid date")
+    }
 
     fn instance(id: &str, name: &str) -> InstanceReference {
         InstanceReference {
@@ -947,33 +1017,36 @@ mod tests {
 
     #[test]
     fn combines_instances_and_uses_first_configured_metadata() {
-        let content = aggregate(CatalogSources {
-            movies: vec![
-                MovieSource {
-                    tmdb_id: 10,
-                    title: "Preferred".to_owned(),
-                    title_slug: "preferred-10".to_owned(),
-                    year: 2020,
-                    size_on_disk_bytes: 100,
-                    file_count: 1,
-                    added_at: None,
-                    instance: instance("hd", "HD"),
-                    config_order: 0,
-                },
-                MovieSource {
-                    tmdb_id: 10,
-                    title: "Other".to_owned(),
-                    title_slug: "other-10".to_owned(),
-                    year: 2021,
-                    size_on_disk_bytes: 400,
-                    file_count: 1,
-                    added_at: None,
-                    instance: instance("uhd", "4K"),
-                    config_order: 1,
-                },
-            ],
-            ..CatalogSources::default()
-        });
+        let content = aggregate(
+            CatalogSources {
+                movies: vec![
+                    MovieSource {
+                        tmdb_id: 10,
+                        title: "Preferred".to_owned(),
+                        title_slug: "preferred-10".to_owned(),
+                        year: 2020,
+                        size_on_disk_bytes: 100,
+                        file_count: 1,
+                        added_at: None,
+                        instance: instance("hd", "HD"),
+                        config_order: 0,
+                    },
+                    MovieSource {
+                        tmdb_id: 10,
+                        title: "Other".to_owned(),
+                        title_slug: "other-10".to_owned(),
+                        year: 2021,
+                        size_on_disk_bytes: 400,
+                        file_count: 1,
+                        added_at: None,
+                        instance: instance("uhd", "4K"),
+                        config_order: 1,
+                    },
+                ],
+                ..CatalogSources::default()
+            },
+            today(),
+        );
 
         let ContentItem::Movie {
             display_name,
@@ -1018,31 +1091,34 @@ mod tests {
             source
         };
 
-        let content = aggregate(CatalogSources {
-            // The later-added instance sorts first to prove min, not first-wins.
-            movies: vec![
-                dated(movie_source("Movie", 100, 1, instance("hd", "HD"), 0), late),
-                dated(
-                    movie_source("Movie", 100, 1, instance("uhd", "4K"), 1),
-                    early,
-                ),
-            ],
-            series: vec![{
-                let mut source =
-                    series_source("Show", 100, 1, vec![1], instance("sonarr", "Sonarr"), 0);
-                source.added_at = early;
-                source
-            }],
-            artists: vec![artist_source(
-                "Artist",
-                100,
-                1,
-                vec!["a"],
-                instance("lidarr", "Lidarr"),
-                0,
-            )],
-            ..CatalogSources::default()
-        });
+        let content = aggregate(
+            CatalogSources {
+                // The later-added instance sorts first to prove min, not first-wins.
+                movies: vec![
+                    dated(movie_source("Movie", 100, 1, instance("hd", "HD"), 0), late),
+                    dated(
+                        movie_source("Movie", 100, 1, instance("uhd", "4K"), 1),
+                        early,
+                    ),
+                ],
+                series: vec![{
+                    let mut source =
+                        series_source("Show", 100, 1, vec![1], instance("sonarr", "Sonarr"), 0);
+                    source.added_at = early;
+                    source
+                }],
+                artists: vec![artist_source(
+                    "Artist",
+                    100,
+                    1,
+                    vec!["a"],
+                    instance("lidarr", "Lidarr"),
+                    0,
+                )],
+                ..CatalogSources::default()
+            },
+            today(),
+        );
 
         let by_type = content
             .iter()
@@ -1057,68 +1133,71 @@ mod tests {
     #[test]
     fn counts_unique_seasons_and_albums_and_filters_empty_content() {
         let shared_instance = instance("one", "One");
-        let content = aggregate(CatalogSources {
-            movies: vec![MovieSource {
-                tmdb_id: 99,
-                title: "Empty".to_owned(),
-                title_slug: "empty-99".to_owned(),
-                year: 2022,
-                size_on_disk_bytes: 0,
-                file_count: 0,
-                added_at: None,
-                instance: shared_instance.clone(),
-                config_order: 0,
-            }],
-            series: vec![
-                SeriesSource {
-                    tvdb_id: 1,
-                    title: "Show".to_owned(),
-                    title_slug: "show".to_owned(),
-                    year: 2020,
-                    size_on_disk_bytes: 100,
-                    file_count: 2,
+        let content = aggregate(
+            CatalogSources {
+                movies: vec![MovieSource {
+                    tmdb_id: 99,
+                    title: "Empty".to_owned(),
+                    title_slug: "empty-99".to_owned(),
+                    year: 2022,
+                    size_on_disk_bytes: 0,
+                    file_count: 0,
                     added_at: None,
-                    season_numbers: vec![1, 2],
                     instance: shared_instance.clone(),
                     config_order: 0,
-                },
-                SeriesSource {
-                    tvdb_id: 1,
-                    title: "Show".to_owned(),
-                    title_slug: "show".to_owned(),
-                    year: 2020,
-                    size_on_disk_bytes: 200,
-                    file_count: 2,
-                    added_at: None,
-                    season_numbers: vec![2, 3],
-                    instance: instance("two", "Two"),
-                    config_order: 1,
-                },
-            ],
-            artists: vec![
-                ArtistSource {
-                    musicbrainz_id: "artist".to_owned(),
-                    name: "Artist".to_owned(),
-                    size_on_disk_bytes: 100,
-                    file_count: 2,
-                    added_at: None,
-                    album_musicbrainz_ids: vec!["a".to_owned(), "b".to_owned()],
-                    instance: shared_instance,
-                    config_order: 0,
-                },
-                ArtistSource {
-                    musicbrainz_id: "artist".to_owned(),
-                    name: "Artist".to_owned(),
-                    size_on_disk_bytes: 200,
-                    file_count: 3,
-                    added_at: None,
-                    album_musicbrainz_ids: vec!["b".to_owned(), "c".to_owned()],
-                    instance: instance("two", "Two"),
-                    config_order: 1,
-                },
-            ],
-            playback: CatalogPlayback::default(),
-        });
+                }],
+                series: vec![
+                    SeriesSource {
+                        tvdb_id: 1,
+                        title: "Show".to_owned(),
+                        title_slug: "show".to_owned(),
+                        year: 2020,
+                        size_on_disk_bytes: 100,
+                        file_count: 2,
+                        added_at: None,
+                        season_numbers: vec![1, 2],
+                        instance: shared_instance.clone(),
+                        config_order: 0,
+                    },
+                    SeriesSource {
+                        tvdb_id: 1,
+                        title: "Show".to_owned(),
+                        title_slug: "show".to_owned(),
+                        year: 2020,
+                        size_on_disk_bytes: 200,
+                        file_count: 2,
+                        added_at: None,
+                        season_numbers: vec![2, 3],
+                        instance: instance("two", "Two"),
+                        config_order: 1,
+                    },
+                ],
+                artists: vec![
+                    ArtistSource {
+                        musicbrainz_id: "artist".to_owned(),
+                        name: "Artist".to_owned(),
+                        size_on_disk_bytes: 100,
+                        file_count: 2,
+                        added_at: None,
+                        album_musicbrainz_ids: vec!["a".to_owned(), "b".to_owned()],
+                        instance: shared_instance,
+                        config_order: 0,
+                    },
+                    ArtistSource {
+                        musicbrainz_id: "artist".to_owned(),
+                        name: "Artist".to_owned(),
+                        size_on_disk_bytes: 200,
+                        file_count: 3,
+                        added_at: None,
+                        album_musicbrainz_ids: vec!["b".to_owned(), "c".to_owned()],
+                        instance: instance("two", "Two"),
+                        config_order: 1,
+                    },
+                ],
+                playback: CatalogPlayback::default(),
+            },
+            today(),
+        );
 
         assert_eq!(content.len(), 2);
         assert!(matches!(
@@ -1150,23 +1229,29 @@ mod tests {
             instance: instance("one", "One"),
             config_order: 0,
         };
-        let unavailable = aggregate(CatalogSources {
-            movies: vec![movie.clone()],
-            ..CatalogSources::default()
-        });
+        let unavailable = aggregate(
+            CatalogSources {
+                movies: vec![movie.clone()],
+                ..CatalogSources::default()
+            },
+            today(),
+        );
         assert!(matches!(
             &unavailable[0],
             ContentItem::Movie { playback: None, .. }
         ));
 
-        let never_played = aggregate(CatalogSources {
-            movies: vec![movie.clone()],
-            playback: CatalogPlayback {
-                available: true,
-                ..CatalogPlayback::default()
+        let never_played = aggregate(
+            CatalogSources {
+                movies: vec![movie.clone()],
+                playback: CatalogPlayback {
+                    available: true,
+                    ..CatalogPlayback::default()
+                },
+                ..CatalogSources::default()
             },
-            ..CatalogSources::default()
-        });
+            today(),
+        );
         assert!(matches!(
             &never_played[0],
             ContentItem::Movie {
@@ -1175,22 +1260,28 @@ mod tests {
             }
         ));
 
-        let played = aggregate(CatalogSources {
-            movies: vec![movie],
-            playback: CatalogPlayback {
-                available: true,
-                movies: BTreeMap::from([(
-                    10,
-                    PlaybackMetrics {
-                        play_count: 3,
-                        play_duration_seconds: 600,
-                        last_played_at: None,
-                    },
-                )]),
-                ..CatalogPlayback::default()
+        let played = aggregate(
+            CatalogSources {
+                movies: vec![movie],
+                playback: CatalogPlayback {
+                    available: true,
+                    movies: BTreeMap::from([(
+                        10,
+                        ItemPlayback {
+                            metrics: Some(PlaybackMetrics {
+                                play_count: 3,
+                                play_duration_seconds: 600,
+                                last_played_at: None,
+                            }),
+                            active_days: Vec::new(),
+                        },
+                    )]),
+                    ..CatalogPlayback::default()
+                },
+                ..CatalogSources::default()
             },
-            ..CatalogSources::default()
-        });
+            today(),
+        );
         assert!(matches!(
             &played[0],
             ContentItem::Movie {
@@ -1198,6 +1289,147 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    fn popularity_score(item: &ContentItem) -> Option<u8> {
+        match item {
+            ContentItem::Artist {
+                popularity_score, ..
+            }
+            | ContentItem::Movie {
+                popularity_score, ..
+            }
+            | ContentItem::Series {
+                popularity_score, ..
+            } => *popularity_score,
+        }
+    }
+
+    fn popularity_by_type(playback: CatalogPlayback) -> BTreeMap<&'static str, Option<u8>> {
+        aggregate(
+            CatalogSources {
+                movies: vec![movie_source("Movie", 100, 1, instance("hd", "HD"), 0)],
+                series: vec![series_source(
+                    "Show",
+                    100,
+                    1,
+                    vec![1],
+                    instance("sonarr", "Sonarr"),
+                    0,
+                )],
+                artists: vec![artist_source(
+                    "Artist",
+                    100,
+                    1,
+                    vec!["a"],
+                    instance("lidarr", "Lidarr"),
+                    0,
+                )],
+                playback,
+            },
+            today(),
+        )
+        .iter()
+        .map(|item| (item.type_name(), popularity_score(item)))
+        .collect()
+    }
+
+    #[test]
+    fn popularity_is_null_without_playback_and_zero_without_activity() {
+        let unavailable = popularity_by_type(CatalogPlayback::default());
+        assert!(unavailable.values().all(Option::is_none));
+
+        let idle = popularity_by_type(CatalogPlayback {
+            available: true,
+            ..CatalogPlayback::default()
+        });
+        assert!(idle.values().all(|score| *score == Some(0)));
+    }
+
+    #[test]
+    fn popularity_scores_movies_series_and_artists_identically() {
+        let played = || ItemPlayback {
+            metrics: None,
+            active_days: vec![today(), today() - chrono::Days::new(180)],
+        };
+        let scores = popularity_by_type(CatalogPlayback {
+            available: true,
+            movies: BTreeMap::from([(10, played())]),
+            series: BTreeMap::from([(1, played())]),
+            artists: BTreeMap::from([("artist-1".to_owned(), played())]),
+        });
+
+        // Weights 1 + 0.5: 100 · (1 − e^(−1.5/5)) = 25.92
+        assert_eq!(scores.len(), 3);
+        assert!(scores.values().all(|score| *score == Some(26)));
+    }
+
+    #[test]
+    fn detail_popularity_matches_the_catalog_rule_for_every_type() {
+        let days = vec![today(), today() - chrono::Days::new(180)];
+        let movie = |playback_available, active_days| {
+            aggregate_movie(
+                MovieDetailsSources {
+                    instances: vec![movie_source("Movie", 100, 1, instance("one", "One"), 0)],
+                    active_days,
+                    playback_available,
+                    ..MovieDetailsSources::default()
+                },
+                today(),
+            )
+            .expect("movie details")
+            .popularity_score
+        };
+        let series = |playback_available, active_days| {
+            aggregate_series(
+                SeriesDetailsSources {
+                    instances: vec![series_source(
+                        "Show",
+                        100,
+                        1,
+                        vec![1],
+                        instance("one", "One"),
+                        0,
+                    )],
+                    active_days,
+                    playback_available,
+                    ..SeriesDetailsSources::default()
+                },
+                today(),
+            )
+            .expect("series details")
+            .popularity_score
+        };
+        let artist = |playback_available, active_days| {
+            aggregate_artist(
+                ArtistDetailsSources {
+                    instances: vec![artist_source(
+                        "Artist",
+                        100,
+                        1,
+                        vec!["a"],
+                        instance("one", "One"),
+                        0,
+                    )],
+                    active_days,
+                    playback_available,
+                    ..ArtistDetailsSources::default()
+                },
+                today(),
+            )
+            .expect("artist details")
+            .popularity_score
+        };
+
+        for build in [
+            &movie as &dyn Fn(bool, Vec<NaiveDate>) -> Option<u8>,
+            &series,
+            &artist,
+        ] {
+            assert_eq!(build(false, Vec::new()), None);
+            assert_eq!(build(true, Vec::new()), Some(0));
+            assert_eq!(build(true, days.clone()), Some(26));
+        }
     }
 
     fn series_source(
@@ -1224,32 +1456,35 @@ mod tests {
 
     #[test]
     fn series_details_sums_sizes_and_per_season_files_across_instances() {
-        let details = aggregate_series(SeriesDetailsSources {
-            instances: vec![
-                // Deliberately out of config order to prove the sort.
-                series_source("Other", 200, 2, vec![2, 3], instance("two", "Two"), 1),
-                series_source("Show", 100, 3, vec![1, 2], instance("one", "One"), 0),
-            ],
-            seasons: vec![
-                SeriesSeasonFiles {
-                    season_number: 1,
-                    file_count: 2,
-                },
-                SeriesSeasonFiles {
-                    season_number: 2,
-                    file_count: 1,
-                },
-                SeriesSeasonFiles {
-                    season_number: 2,
-                    file_count: 1,
-                },
-                SeriesSeasonFiles {
-                    season_number: 3,
-                    file_count: 4,
-                },
-            ],
-            ..SeriesDetailsSources::default()
-        })
+        let details = aggregate_series(
+            SeriesDetailsSources {
+                instances: vec![
+                    // Deliberately out of config order to prove the sort.
+                    series_source("Other", 200, 2, vec![2, 3], instance("two", "Two"), 1),
+                    series_source("Show", 100, 3, vec![1, 2], instance("one", "One"), 0),
+                ],
+                seasons: vec![
+                    SeriesSeasonFiles {
+                        season_number: 1,
+                        file_count: 2,
+                    },
+                    SeriesSeasonFiles {
+                        season_number: 2,
+                        file_count: 1,
+                    },
+                    SeriesSeasonFiles {
+                        season_number: 2,
+                        file_count: 1,
+                    },
+                    SeriesSeasonFiles {
+                        season_number: 3,
+                        file_count: 4,
+                    },
+                ],
+                ..SeriesDetailsSources::default()
+            },
+            today(),
+        )
         .expect("series details");
 
         assert_eq!(details.display_name, "Show"); // lowest config_order wins
@@ -1305,17 +1540,20 @@ mod tests {
 
     #[test]
     fn series_details_excludes_empty_instance_from_header_but_keeps_it_in_details() {
-        let details = aggregate_series(SeriesDetailsSources {
-            instances: vec![
-                series_source("Show", 100, 2, vec![1], instance("full", "Full"), 0),
-                series_source("Show", 0, 0, vec![], instance("empty", "Empty"), 1),
-            ],
-            seasons: vec![SeriesSeasonFiles {
-                season_number: 1,
-                file_count: 2,
-            }],
-            ..SeriesDetailsSources::default()
-        })
+        let details = aggregate_series(
+            SeriesDetailsSources {
+                instances: vec![
+                    series_source("Show", 100, 2, vec![1], instance("full", "Full"), 0),
+                    series_source("Show", 0, 0, vec![], instance("empty", "Empty"), 1),
+                ],
+                seasons: vec![SeriesSeasonFiles {
+                    season_number: 1,
+                    file_count: 2,
+                }],
+                ..SeriesDetailsSources::default()
+            },
+            today(),
+        )
         .expect("series details");
 
         assert_eq!(details.instances.len(), 1);
@@ -1332,20 +1570,23 @@ mod tests {
     #[test]
     fn series_details_distinguishes_playback_availability() {
         let build = |playback_available, playback| {
-            aggregate_series(SeriesDetailsSources {
-                instances: vec![series_source(
-                    "Show",
-                    100,
-                    2,
-                    vec![1],
-                    instance("one", "One"),
-                    0,
-                )],
-                seasons: Vec::new(),
-                playback_available,
-                playback,
-                ..SeriesDetailsSources::default()
-            })
+            aggregate_series(
+                SeriesDetailsSources {
+                    instances: vec![series_source(
+                        "Show",
+                        100,
+                        2,
+                        vec![1],
+                        instance("one", "One"),
+                        0,
+                    )],
+                    seasons: Vec::new(),
+                    playback_available,
+                    playback,
+                    ..SeriesDetailsSources::default()
+                },
+                today(),
+            )
             .expect("series details")
         };
 
@@ -1370,7 +1611,7 @@ mod tests {
 
     #[test]
     fn series_details_returns_none_without_instances() {
-        assert!(aggregate_series(SeriesDetailsSources::default()).is_none());
+        assert!(aggregate_series(SeriesDetailsSources::default(), today()).is_none());
     }
 
     fn episode_file(
@@ -1393,25 +1634,28 @@ mod tests {
 
     #[test]
     fn series_details_merges_episodes_across_instances() {
-        let details = aggregate_series(SeriesDetailsSources {
-            instances: vec![
-                series_source("Show", 100, 2, vec![1], instance("one", "One"), 0),
-                series_source("Show", 480, 2, vec![1], instance("two", "Two"), 1),
-            ],
-            seasons: vec![SeriesSeasonFiles {
-                season_number: 1,
-                file_count: 3,
-            }],
-            // Rows arrive ordered by config_order; the first title wins, file
-            // presence is OR'd, and sizes are summed.
-            episodes: vec![
-                episode_file(1, 1, "Pilot", true, 100),
-                episode_file(1, 2, "Second", false, 0),
-                episode_file(1, 1, "Pilot (4K)", true, 400),
-                episode_file(1, 2, "Second (4K)", true, 80),
-            ],
-            ..SeriesDetailsSources::default()
-        })
+        let details = aggregate_series(
+            SeriesDetailsSources {
+                instances: vec![
+                    series_source("Show", 100, 2, vec![1], instance("one", "One"), 0),
+                    series_source("Show", 480, 2, vec![1], instance("two", "Two"), 1),
+                ],
+                seasons: vec![SeriesSeasonFiles {
+                    season_number: 1,
+                    file_count: 3,
+                }],
+                // Rows arrive ordered by config_order; the first title wins, file
+                // presence is OR'd, and sizes are summed.
+                episodes: vec![
+                    episode_file(1, 1, "Pilot", true, 100),
+                    episode_file(1, 2, "Second", false, 0),
+                    episode_file(1, 1, "Pilot (4K)", true, 400),
+                    episode_file(1, 2, "Second (4K)", true, 80),
+                ],
+                ..SeriesDetailsSources::default()
+            },
+            today(),
+        )
         .expect("series details");
 
         assert_eq!(details.seasons.len(), 1);
@@ -1439,26 +1683,29 @@ mod tests {
             source
         };
 
-        let details = aggregate_series(SeriesDetailsSources {
-            instances: vec![
-                dated_source(
-                    series_source("Show", 100, 2, vec![1], instance("one", "One"), 0),
-                    late,
-                ),
-                dated_source(
-                    series_source("Show", 480, 2, vec![1], instance("two", "Two"), 1),
-                    early,
-                ),
-            ],
-            // Unlike title and air date, a second instance's date is not
-            // ignored: the oldest copy anywhere sets the episode's age.
-            episodes: vec![
-                dated(episode_file(1, 1, "Pilot", true, 100), late),
-                dated(episode_file(1, 1, "Pilot (4K)", true, 400), early),
-                episode_file(1, 2, "Second", true, 80),
-            ],
-            ..SeriesDetailsSources::default()
-        })
+        let details = aggregate_series(
+            SeriesDetailsSources {
+                instances: vec![
+                    dated_source(
+                        series_source("Show", 100, 2, vec![1], instance("one", "One"), 0),
+                        late,
+                    ),
+                    dated_source(
+                        series_source("Show", 480, 2, vec![1], instance("two", "Two"), 1),
+                        early,
+                    ),
+                ],
+                // Unlike title and air date, a second instance's date is not
+                // ignored: the oldest copy anywhere sets the episode's age.
+                episodes: vec![
+                    dated(episode_file(1, 1, "Pilot", true, 100), late),
+                    dated(episode_file(1, 1, "Pilot (4K)", true, 400), early),
+                    episode_file(1, 2, "Second", true, 80),
+                ],
+                ..SeriesDetailsSources::default()
+            },
+            today(),
+        )
         .expect("series details");
 
         let episodes = &details.seasons[0].episodes;
@@ -1514,7 +1761,7 @@ mod tests {
             ..SeriesDetailsSources::default()
         };
 
-        let details = aggregate_series(sources()).expect("series details");
+        let details = aggregate_series(sources(), today()).expect("series details");
         let season = &details.seasons[0];
         let season_playback = season.playback.as_ref().expect("season playback");
         assert_eq!(season_playback.play_count, 3);
@@ -1539,7 +1786,7 @@ mod tests {
             play_duration_seconds: 600,
             last_played_at: last_played,
         });
-        let details = aggregate_series(overlapping).expect("series details");
+        let details = aggregate_series(overlapping, today()).expect("series details");
         assert_eq!(details.unattributed_play_count, Some(0));
     }
 
@@ -1565,14 +1812,17 @@ mod tests {
 
     #[test]
     fn movie_details_sums_sizes_across_instances_and_uses_first_configured_metadata() {
-        let details = aggregate_movie(MovieDetailsSources {
-            instances: vec![
-                // Deliberately out of config order to prove the sort.
-                movie_source("Other", 400, 1, instance("two", "Two"), 1),
-                movie_source("Movie", 100, 1, instance("one", "One"), 0),
-            ],
-            ..MovieDetailsSources::default()
-        })
+        let details = aggregate_movie(
+            MovieDetailsSources {
+                instances: vec![
+                    // Deliberately out of config order to prove the sort.
+                    movie_source("Other", 400, 1, instance("two", "Two"), 1),
+                    movie_source("Movie", 100, 1, instance("one", "One"), 0),
+                ],
+                ..MovieDetailsSources::default()
+            },
+            today(),
+        )
         .expect("movie details");
 
         assert_eq!(details.display_name, "Movie"); // lowest config_order wins
@@ -1588,13 +1838,16 @@ mod tests {
 
     #[test]
     fn movie_details_excludes_empty_instance_from_header_but_keeps_it_in_details() {
-        let details = aggregate_movie(MovieDetailsSources {
-            instances: vec![
-                movie_source("Movie", 100, 1, instance("full", "Full"), 0),
-                movie_source("Movie", 0, 0, instance("empty", "Empty"), 1),
-            ],
-            ..MovieDetailsSources::default()
-        })
+        let details = aggregate_movie(
+            MovieDetailsSources {
+                instances: vec![
+                    movie_source("Movie", 100, 1, instance("full", "Full"), 0),
+                    movie_source("Movie", 0, 0, instance("empty", "Empty"), 1),
+                ],
+                ..MovieDetailsSources::default()
+            },
+            today(),
+        )
         .expect("movie details");
 
         assert_eq!(details.instances.len(), 1);
@@ -1611,12 +1864,15 @@ mod tests {
     #[test]
     fn movie_details_distinguishes_playback_availability() {
         let build = |playback_available, playback| {
-            aggregate_movie(MovieDetailsSources {
-                instances: vec![movie_source("Movie", 100, 1, instance("one", "One"), 0)],
-                playback_available,
-                playback,
-                ..MovieDetailsSources::default()
-            })
+            aggregate_movie(
+                MovieDetailsSources {
+                    instances: vec![movie_source("Movie", 100, 1, instance("one", "One"), 0)],
+                    playback_available,
+                    playback,
+                    ..MovieDetailsSources::default()
+                },
+                today(),
+            )
             .expect("movie details")
         };
 
@@ -1641,35 +1897,38 @@ mod tests {
 
     #[test]
     fn movie_details_returns_none_without_instances() {
-        assert!(aggregate_movie(MovieDetailsSources::default()).is_none());
+        assert!(aggregate_movie(MovieDetailsSources::default(), today()).is_none());
     }
 
     #[test]
     fn movie_details_passes_user_playback_and_counts_unknown_users() {
         let build = |playback_available, play_count, user_counts: Vec<i64>| {
-            aggregate_movie(MovieDetailsSources {
-                instances: vec![movie_source("Movie", 100, 1, instance("one", "One"), 0)],
-                user_playback: user_counts
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, count)| UserPlayback {
-                        user_id: i64::try_from(index).expect("small index"),
-                        user_name: Some(format!("User {index}")),
-                        playback: PlaybackMetrics {
-                            play_count: count,
-                            play_duration_seconds: 0,
-                            last_played_at: None,
-                        },
-                    })
-                    .collect(),
-                playback_available,
-                playback: Some(PlaybackMetrics {
-                    play_count,
-                    play_duration_seconds: 0,
-                    last_played_at: None,
-                }),
-                ..MovieDetailsSources::default()
-            })
+            aggregate_movie(
+                MovieDetailsSources {
+                    instances: vec![movie_source("Movie", 100, 1, instance("one", "One"), 0)],
+                    user_playback: user_counts
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, count)| UserPlayback {
+                            user_id: i64::try_from(index).expect("small index"),
+                            user_name: Some(format!("User {index}")),
+                            playback: PlaybackMetrics {
+                                play_count: count,
+                                play_duration_seconds: 0,
+                                last_played_at: None,
+                            },
+                        })
+                        .collect(),
+                    playback_available,
+                    playback: Some(PlaybackMetrics {
+                        play_count,
+                        play_duration_seconds: 0,
+                        last_played_at: None,
+                    }),
+                    ..MovieDetailsSources::default()
+                },
+                today(),
+            )
             .expect("movie details")
         };
 
@@ -1701,28 +1960,31 @@ mod tests {
             source
         };
 
-        let details = aggregate_movie(MovieDetailsSources {
-            // The later-added instance sorts first to prove min, not first-wins.
-            instances: vec![
-                with_availability(late, 0),
-                with_availability(early, 1),
-                with_availability(None, 2),
-            ],
-            daily_playback: vec![
-                DailyPlayback {
-                    date: "2024-01-10".to_owned(),
-                    play_count: 2,
-                    play_duration_seconds: 3_600,
-                },
-                DailyPlayback {
-                    date: "2024-03-05".to_owned(),
-                    play_count: 1,
-                    play_duration_seconds: 1_800,
-                },
-            ],
-            playback_available: true,
-            ..MovieDetailsSources::default()
-        })
+        let details = aggregate_movie(
+            MovieDetailsSources {
+                // The later-added instance sorts first to prove min, not first-wins.
+                instances: vec![
+                    with_availability(late, 0),
+                    with_availability(early, 1),
+                    with_availability(None, 2),
+                ],
+                daily_playback: vec![
+                    DailyPlayback {
+                        date: "2024-01-10".to_owned(),
+                        play_count: 2,
+                        play_duration_seconds: 3_600,
+                    },
+                    DailyPlayback {
+                        date: "2024-03-05".to_owned(),
+                        play_count: 1,
+                        play_duration_seconds: 1_800,
+                    },
+                ],
+                playback_available: true,
+                ..MovieDetailsSources::default()
+            },
+            today(),
+        )
         .expect("movie details");
 
         assert_eq!(details.added_at, early);
@@ -1770,14 +2032,17 @@ mod tests {
 
     #[test]
     fn artist_details_sums_sizes_across_instances_and_uses_first_configured_metadata() {
-        let details = aggregate_artist(ArtistDetailsSources {
-            instances: vec![
-                // Deliberately out of config order to prove the sort.
-                artist_source("Other", 400, 3, vec!["a", "b"], instance("two", "Two"), 1),
-                artist_source("Artist", 100, 2, vec!["a"], instance("one", "One"), 0),
-            ],
-            ..ArtistDetailsSources::default()
-        })
+        let details = aggregate_artist(
+            ArtistDetailsSources {
+                instances: vec![
+                    // Deliberately out of config order to prove the sort.
+                    artist_source("Other", 400, 3, vec!["a", "b"], instance("two", "Two"), 1),
+                    artist_source("Artist", 100, 2, vec!["a"], instance("one", "One"), 0),
+                ],
+                ..ArtistDetailsSources::default()
+            },
+            today(),
+        )
         .expect("artist details");
 
         assert_eq!(details.display_name, "Artist"); // lowest config_order wins
@@ -1794,25 +2059,28 @@ mod tests {
 
     #[test]
     fn artist_details_merges_albums_across_instances() {
-        let details = aggregate_artist(ArtistDetailsSources {
-            instances: vec![artist_source(
-                "Artist",
-                100,
-                2,
-                vec!["a", "b"],
-                instance("one", "One"),
-                0,
-            )],
-            // Rows arrive ordered by config_order; the first non-empty title
-            // wins (a pre-0007 placeholder can't blank a known title), sizes
-            // and file counts are summed.
-            albums: vec![
-                album_file("a", "", 0, 3),
-                album_file("b", "Beta", 200, 2),
-                album_file("a", "Alpha", 400, 3),
-            ],
-            ..ArtistDetailsSources::default()
-        })
+        let details = aggregate_artist(
+            ArtistDetailsSources {
+                instances: vec![artist_source(
+                    "Artist",
+                    100,
+                    2,
+                    vec!["a", "b"],
+                    instance("one", "One"),
+                    0,
+                )],
+                // Rows arrive ordered by config_order; the first non-empty title
+                // wins (a pre-0007 placeholder can't blank a known title), sizes
+                // and file counts are summed.
+                albums: vec![
+                    album_file("a", "", 0, 3),
+                    album_file("b", "Beta", 200, 2),
+                    album_file("a", "Alpha", 400, 3),
+                ],
+                ..ArtistDetailsSources::default()
+            },
+            today(),
+        )
         .expect("artist details");
 
         assert_eq!(details.albums.len(), 2);
@@ -1826,13 +2094,16 @@ mod tests {
 
     #[test]
     fn artist_details_excludes_empty_instance_from_header_but_keeps_it_in_details() {
-        let details = aggregate_artist(ArtistDetailsSources {
-            instances: vec![
-                artist_source("Artist", 100, 2, vec!["a"], instance("full", "Full"), 0),
-                artist_source("Artist", 0, 0, vec![], instance("empty", "Empty"), 1),
-            ],
-            ..ArtistDetailsSources::default()
-        })
+        let details = aggregate_artist(
+            ArtistDetailsSources {
+                instances: vec![
+                    artist_source("Artist", 100, 2, vec!["a"], instance("full", "Full"), 0),
+                    artist_source("Artist", 0, 0, vec![], instance("empty", "Empty"), 1),
+                ],
+                ..ArtistDetailsSources::default()
+            },
+            today(),
+        )
         .expect("artist details");
 
         assert_eq!(details.instances.len(), 1);
@@ -1849,19 +2120,22 @@ mod tests {
     #[test]
     fn artist_details_distinguishes_playback_availability() {
         let build = |playback_available, playback| {
-            aggregate_artist(ArtistDetailsSources {
-                instances: vec![artist_source(
-                    "Artist",
-                    100,
-                    2,
-                    vec!["a"],
-                    instance("one", "One"),
-                    0,
-                )],
-                playback_available,
-                playback,
-                ..ArtistDetailsSources::default()
-            })
+            aggregate_artist(
+                ArtistDetailsSources {
+                    instances: vec![artist_source(
+                        "Artist",
+                        100,
+                        2,
+                        vec!["a"],
+                        instance("one", "One"),
+                        0,
+                    )],
+                    playback_available,
+                    playback,
+                    ..ArtistDetailsSources::default()
+                },
+                today(),
+            )
             .expect("artist details")
         };
 
@@ -1886,6 +2160,6 @@ mod tests {
 
     #[test]
     fn artist_details_returns_none_without_instances() {
-        assert!(aggregate_artist(ArtistDetailsSources::default()).is_none());
+        assert!(aggregate_artist(ArtistDetailsSources::default(), today()).is_none());
     }
 }

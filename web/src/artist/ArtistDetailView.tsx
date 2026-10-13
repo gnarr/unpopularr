@@ -61,6 +61,7 @@ function ArtistDetail({ data }: { data: ArtistDetails }) {
         fileCount={data.fileCount}
         addedAt={data.addedAt}
         playback={data.playback}
+        popularityScore={data.popularityScore}
       />
 
       <section className="rounded-lg border border-slate-800 bg-slate-900/40">

@@ -68,6 +68,7 @@ function SeriesDetail({ data }: { data: SeriesDetails }) {
         fileCount={data.fileCount}
         addedAt={data.addedAt}
         playback={playback}
+        popularityScore={data.popularityScore}
       />
 
       {playback !== null && watchStrip.hasWatchData && (

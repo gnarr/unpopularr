@@ -2,15 +2,42 @@ use std::collections::HashMap;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use sqlx::{Row, SqlitePool};
 
 use crate::catalog::{
     ArtistAlbumFile, ArtistDetailsSources, ArtistSource, CatalogPlayback, CatalogRepository,
-    CatalogSources, DailyPlayback, InstanceReference, MovieDetailsSources, MovieSource,
-    PlaybackMetrics, SeriesDetailsSources, SeriesEpisodeFile, SeriesEpisodePlayback,
+    CatalogSources, DailyPlayback, InstanceReference, ItemPlayback, MovieDetailsSources,
+    MovieSource, PlaybackMetrics, SeriesDetailsSources, SeriesEpisodeFile, SeriesEpisodePlayback,
     SeriesSeasonFiles, SeriesSource, UserPlayback,
 };
+
+/// Distinct UTC days with playback per item, the popularity score's input.
+/// Events inside a legacy aggregate's covered window are excluded, like every
+/// other playback read, because the legacy row already stands for them. In
+/// their place a legacy aggregate with plays and a timestamp contributes one
+/// synthetic day: its last play, the only date it reliably carries. `UNION`
+/// (not `UNION ALL`) collapses same-day sessions, and a synthetic day that
+/// coincides with a real one. A macro so the per-item query can extend it and
+/// both stay `&'static str`.
+macro_rules! active_days_sql {
+    () => {
+        r#"
+        SELECT events.content_type, events.content_id,
+               substr(events.played_at, 1, 10) AS day
+        FROM playback_events AS events
+        LEFT JOIN playback_legacy_snapshots AS legacy
+            ON legacy.source_id = events.source_id
+           AND legacy.content_type = events.content_type
+           AND legacy.content_id = events.content_id
+        WHERE legacy.source_id IS NULL OR events.played_at > legacy.covered_until
+        UNION
+        SELECT content_type, content_id, substr(last_played_at, 1, 10) AS day
+        FROM playback_legacy_snapshots
+        WHERE play_count > 0 AND last_played_at IS NOT NULL
+        "#
+    };
+}
 
 #[derive(Clone)]
 pub struct SqliteCatalogRepository {
@@ -62,6 +89,22 @@ impl SqliteCatalogRepository {
             })
         })
         .transpose()
+    }
+
+    /// Active playback days for one item; see `active_days_sql!`.
+    async fn active_days(&self, content_type: &str, content_id: &str) -> Result<Vec<NaiveDate>> {
+        sqlx::query(concat!(
+            "SELECT day FROM (",
+            active_days_sql!(),
+            ") WHERE content_type = ?1 AND content_id = ?2 ORDER BY day"
+        ))
+        .bind(content_type)
+        .bind(content_id)
+        .fetch_all(&self.pool)
+        .await?
+        .iter()
+        .map(parse_day)
+        .collect()
     }
 
     /// Per-calendar-day playback totals for one movie, ascending by day.
@@ -311,36 +354,19 @@ impl CatalogRepository for SqliteCatalogRepository {
             .fetch_all(&self.pool)
             .await?;
             for row in rows {
-                let metrics = PlaybackMetrics {
+                item_playback(&mut playback, &row)?.metrics = Some(PlaybackMetrics {
                     play_count: row.try_get("play_count")?,
                     play_duration_seconds: row.try_get("play_duration_seconds")?,
                     last_played_at: row.try_get("last_played_at")?,
-                };
-                let content_id: String = row.try_get("content_id")?;
-                match row.try_get::<String, _>("content_type")?.as_str() {
-                    "movie" => {
-                        playback.movies.insert(
-                            content_id.parse().with_context(|| {
-                                format!("invalid movie playback ID {content_id}")
-                            })?,
-                            metrics,
-                        );
-                    }
-                    "series" => {
-                        playback.series.insert(
-                            content_id.parse().with_context(|| {
-                                format!("invalid series playback ID {content_id}")
-                            })?,
-                            metrics,
-                        );
-                    }
-                    "artist" => {
-                        playback.artists.insert(content_id, metrics);
-                    }
-                    content_type => {
-                        anyhow::bail!("unknown playback content type in database: {content_type}");
-                    }
-                }
+                });
+            }
+
+            let rows = sqlx::query(active_days_sql!())
+                .fetch_all(&self.pool)
+                .await?;
+            for row in rows {
+                let day = parse_day(&row)?;
+                item_playback(&mut playback, &row)?.active_days.push(day);
             }
         }
 
@@ -476,6 +502,11 @@ impl CatalogRepository for SqliteCatalogRepository {
         } else {
             Vec::new()
         };
+        let active_days = if playback_available {
+            self.active_days("series", &tvdb_id.to_string()).await?
+        } else {
+            Vec::new()
+        };
 
         let instances = series_rows
             .into_iter()
@@ -504,6 +535,7 @@ impl CatalogRepository for SqliteCatalogRepository {
             episodes,
             episode_playback,
             user_playback,
+            active_days,
             playback_available,
             playback,
         }))
@@ -563,11 +595,17 @@ impl CatalogRepository for SqliteCatalogRepository {
         } else {
             Vec::new()
         };
+        let active_days = if playback_available {
+            self.active_days("movie", &tmdb_id.to_string()).await?
+        } else {
+            Vec::new()
+        };
 
         Ok(Some(MovieDetailsSources {
             instances,
             daily_playback,
             user_playback,
+            active_days,
             playback_available,
             playback,
         }))
@@ -654,15 +692,49 @@ impl CatalogRepository for SqliteCatalogRepository {
         } else {
             Vec::new()
         };
+        let active_days = if playback_available {
+            self.active_days("artist", musicbrainz_id).await?
+        } else {
+            Vec::new()
+        };
 
         Ok(Some(ArtistDetailsSources {
             instances,
             albums,
             user_playback,
+            active_days,
             playback_available,
             playback,
         }))
     }
+}
+
+/// The catalog entry a playback row belongs to, keyed by its typed content ID.
+fn item_playback<'a>(
+    playback: &'a mut CatalogPlayback,
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<&'a mut ItemPlayback> {
+    let content_type: String = row.try_get("content_type")?;
+    let content_id: String = row.try_get("content_id")?;
+    let numeric_id = || {
+        content_id
+            .parse::<i64>()
+            .with_context(|| format!("invalid {content_type} playback ID {content_id}"))
+    };
+    Ok(match content_type.as_str() {
+        "movie" => playback.movies.entry(numeric_id()?).or_default(),
+        "series" => playback.series.entry(numeric_id()?).or_default(),
+        "artist" => playback.artists.entry(content_id).or_default(),
+        _ => anyhow::bail!("unknown playback content type in database: {content_type}"),
+    })
+}
+
+/// The `day` column of an active-days row: the `YYYY-MM-DD` prefix of a stored
+/// UTC timestamp, so already the UTC calendar day.
+fn parse_day(row: &sqlx::sqlite::SqliteRow) -> Result<NaiveDate> {
+    let day: String = row.try_get("day")?;
+    day.parse()
+        .with_context(|| format!("invalid playback day {day}"))
 }
 
 fn instance_reference(row: &sqlx::sqlite::SqliteRow) -> Result<InstanceReference> {
@@ -798,5 +870,143 @@ mod tests {
         assert_eq!(users[1].user_id, 0);
         assert_eq!(users[1].user_name.as_deref(), Some("Local"));
         assert_eq!(users[1].playback.play_count, 1);
+    }
+
+    async fn seed(pool: &SqlitePool, sql: &'static str) {
+        sqlx::query(sql).execute(pool).await.expect("seed");
+    }
+
+    fn day(iso: &str) -> NaiveDate {
+        iso.parse().expect("valid date")
+    }
+
+    fn sorted(mut days: Vec<NaiveDate>) -> Vec<NaiveDate> {
+        days.sort_unstable();
+        days
+    }
+
+    #[tokio::test]
+    async fn load_sources_collects_distinct_utc_days_per_item() {
+        let pool = database::test_pool().await;
+        let repository = SqliteCatalogRepository::new(pool.clone());
+        seed(
+            &pool,
+            r#"
+            INSERT INTO playback_sources (id, provider, last_successful_sync_at)
+            VALUES ('plex', 'tautulli', '2026-01-03T00:00:00Z')
+            "#,
+        )
+        .await;
+        // Movie 42: two sessions bracketing one UTC day, then the next day's
+        // first second twice (separate Tautulli rows, same timestamp), once
+        // without a user. The series and artist share an ID string with
+        // nothing, proving rows are keyed per content type.
+        seed(
+            &pool,
+            r#"
+            INSERT INTO playback_events (
+                source_id, source_row_id, content_type, content_id,
+                played_at, duration_seconds, user_id, user_name
+            )
+            VALUES ('plex', 1, 'movie', '42', '2026-01-01T00:00:00Z', 60, 7, 'Alice'),
+                   ('plex', 2, 'movie', '42', '2026-01-01T23:59:59Z', 60, 7, 'Alice'),
+                   ('plex', 3, 'movie', '42', '2026-01-02T00:00:00Z', 60, 7, 'Alice'),
+                   ('plex', 4, 'movie', '42', '2026-01-02T00:00:00Z', 60, NULL, NULL),
+                   ('plex', 5, 'series', '42', '2026-01-03T12:00:00Z', 60, 7, 'Alice'),
+                   ('plex', 6, 'artist', 'mbid', '2025-12-31T23:59:59Z', 60, NULL, NULL)
+            "#,
+        )
+        .await;
+
+        let playback = repository.load_sources().await.expect("load").playback;
+
+        assert!(playback.available);
+        assert_eq!(
+            sorted(playback.movies[&42].active_days.clone()),
+            vec![day("2026-01-01"), day("2026-01-02")]
+        );
+        assert_eq!(playback.series[&42].active_days, vec![day("2026-01-03")]);
+        assert_eq!(
+            playback.artists["mbid"].active_days,
+            vec![day("2025-12-31")]
+        );
+    }
+
+    #[tokio::test]
+    async fn load_sources_skips_playback_before_the_first_successful_sync() {
+        let pool = database::test_pool().await;
+        let repository = SqliteCatalogRepository::new(pool.clone());
+        seed(
+            &pool,
+            "INSERT INTO playback_sources (id, provider) VALUES ('plex', 'tautulli')",
+        )
+        .await;
+        seed(
+            &pool,
+            r#"
+            INSERT INTO playback_events (
+                source_id, source_row_id, content_type, content_id,
+                played_at, duration_seconds
+            )
+            VALUES ('plex', 1, 'movie', '42', '2026-01-01T00:00:00Z', 60)
+            "#,
+        )
+        .await;
+
+        let playback = repository.load_sources().await.expect("load").playback;
+
+        assert!(!playback.available);
+        assert!(playback.movies.is_empty());
+    }
+
+    #[tokio::test]
+    async fn active_days_replace_covered_events_with_one_legacy_day() {
+        let pool = database::test_pool().await;
+        let repository = SqliteCatalogRepository::new(pool.clone());
+        seed(
+            &pool,
+            "INSERT INTO playback_sources (id, provider) VALUES ('plex', 'tautulli')",
+        )
+        .await;
+        // 42: covered history plus one later event. 43: the legacy day and a
+        // post-cutoff event share a date. 44: no reliable timestamp. 45: no
+        // plays, so its timestamp is not evidence of activity.
+        seed(
+            &pool,
+            r#"
+            INSERT INTO playback_legacy_snapshots (
+                source_id, content_type, content_id, play_count,
+                play_duration_seconds, last_played_at, covered_until
+            )
+            VALUES ('plex', 'movie', '42', 3, 600, '2024-01-12T10:00:00Z', '2024-01-15T00:00:00Z'),
+                   ('plex', 'movie', '43', 1, 60, '2024-02-01T08:00:00Z', '2024-02-01T09:00:00Z'),
+                   ('plex', 'movie', '44', 2, 120, NULL, '2024-01-15T00:00:00Z'),
+                   ('plex', 'movie', '45', 0, 0, '2024-01-12T10:00:00Z', '2024-01-15T00:00:00Z')
+            "#,
+        )
+        .await;
+        seed(
+            &pool,
+            r#"
+            INSERT INTO playback_events (
+                source_id, source_row_id, content_type, content_id,
+                played_at, duration_seconds
+            )
+            VALUES ('plex', 1, 'movie', '42', '2024-01-10T00:00:00Z', 60),
+                   ('plex', 2, 'movie', '42', '2024-01-12T20:00:00Z', 60),
+                   ('plex', 3, 'movie', '42', '2024-01-20T00:00:00Z', 60),
+                   ('plex', 4, 'movie', '43', '2024-02-01T21:00:00Z', 60)
+            "#,
+        )
+        .await;
+
+        let days = |id: &'static str| {
+            let repository = repository.clone();
+            async move { repository.active_days("movie", id).await.expect("days") }
+        };
+        assert_eq!(days("42").await, vec![day("2024-01-12"), day("2024-01-20")]);
+        assert_eq!(days("43").await, vec![day("2024-02-01")]);
+        assert!(days("44").await.is_empty());
+        assert!(days("45").await.is_empty());
     }
 }

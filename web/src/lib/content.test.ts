@@ -18,6 +18,7 @@ const movie: MovieItem = {
   instances: [],
   addedAt: null,
   playback: null,
+  popularityScore: null,
   tmdbId: 949,
   year: 1995,
 }
@@ -30,6 +31,7 @@ const series: SeriesItem = {
   instances: [],
   addedAt: null,
   playback: null,
+  popularityScore: null,
   tvdbId: 79126,
   year: 2002,
   seasonsWithFiles: 5,
@@ -43,6 +45,7 @@ const artist: ArtistItem = {
   instances: [],
   addedAt: null,
   playback: null,
+  popularityScore: null,
   musicBrainzId: 'mbid-1',
   albumsWithFiles: 1,
 }
