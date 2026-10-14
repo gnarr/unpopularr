@@ -19,6 +19,7 @@ const movie: MovieItem = {
   addedAt: null,
   playback: null,
   popularityScore: null,
+  reclaimScore: null,
   tmdbId: 949,
   year: 1995,
 }
@@ -32,6 +33,7 @@ const series: SeriesItem = {
   addedAt: null,
   playback: null,
   popularityScore: null,
+  reclaimScore: null,
   tvdbId: 79126,
   year: 2002,
   seasonsWithFiles: 5,
@@ -46,6 +48,7 @@ const artist: ArtistItem = {
   addedAt: null,
   playback: null,
   popularityScore: null,
+  reclaimScore: null,
   musicBrainzId: 'mbid-1',
   albumsWithFiles: 1,
 }

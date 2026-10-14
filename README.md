@@ -155,6 +155,66 @@ It merges with a real active day on the same date, and aggregates without a
 last-played time contribute nothing. Sessions already covered by a legacy
 aggregate are not counted again.
 
+### Reclaim score
+
+Alongside popularity, every movie, series, and artist carries a reclaim score
+from 0 to 100. It answers "how attractive is this to delete to free disk
+space?": 0 is a poor candidate, 100 an excellent one. It is advisory only.
+Unpopularr never deletes or changes anything.
+
+Popularity alone is not enough to rank deletions. It ignores size and age, so
+an episode added yesterday, a 200 MB album, and an untouched 80 GiB remux can
+all score 0. The reclaim score combines four factors, and all of them have to
+agree before it gets high:
+
+```text
+unpopularity = 1 - popularity / 100
+idle         = 1                                   if playCount == 0
+               1 - 2^(-days_since_last_play / 180) otherwise
+maturity     = 1 - 2^(-age_days / 180)
+size_gib     = sizeOnDiskBytes / 2^30
+space_value  = size_gib / (size_gib + 5)
+reclaim      = round(100 * unpopularity * idle * maturity * space_value)
+```
+
+- **Idle** protects recently played media. Anything played today scores 0,
+  however large it is. Protection halves every 180 days without a play.
+- **Maturity** protects new arrivals. Media added today scores 0, even if it
+  was never played. Protection halves every 180 days in the library, measured
+  from `addedAt` (see [Media age](#media-age)).
+- **Space value** saturates around 5 GiB: 5 GiB counts half, 50 GiB counts
+  0.91, 500 GiB counts 0.99. Large items rank high, but a 500 GiB item does not
+  count ten times more than a 50 GiB one. Small files never become top
+  candidates just because they are old and unused.
+
+Days are whole UTC calendar days, as for popularity. Timestamps in the future
+(clock skew) count as today. `round` rounds halves away from zero, and the
+result is clamped to 0–100. Like popularity, the score is computed on every
+request and never stored.
+
+| Item (popularity 0 unless noted) | Score |
+| --- | --- |
+| Never played, added today, 50 GiB | 0 |
+| Never played, added 30 days ago, 50 GiB | 10 |
+| Never played, added 180 days ago, 50 GiB | 45 |
+| Never played, two years old, 5 GiB | 47 |
+| Never played, two years old, 50 GiB | 85 |
+| Never played, two years old, 500 GiB | 93 |
+| Never played, five years old, 100 MiB | 2 |
+| Popularity 15, last played 30 days ago, two years old, 50 GiB | 8 |
+| Popularity 5, last played a year ago, three years old, 40 GiB | 63 |
+| Played today, any age and size | 0 |
+
+The score is `null` (unknown) rather than a guess when an input is missing:
+
+- playback is unavailable, as for `popularityScore`
+- `addedAt` is unknown
+- playback reports plays but no last-played time (some legacy aggregates)
+
+Never-played content with known playback counts as fully idle. As with
+popularity, "never played" means "no playback Tautulli recorded", so media
+older than your Tautulli history can look more idle than it really is.
+
 ## Web UI
 
 The binary also serves a small web UI at the same address as the API. Open the
@@ -195,6 +255,7 @@ Only aggregated entries with at least one file are returned.
         "lastSuccessfulSyncAt": "2026-06-24T12:00:00Z"
       }
     ],
+    "addedAt": "2024-03-01T00:00:00Z",
     "tmdbId": 123,
     "year": 2024,
     "playback": {
@@ -202,7 +263,8 @@ Only aggregated entries with at least one file are returned.
       "playDurationSeconds": 7200,
       "lastPlayedAt": "2026-06-24T12:00:00Z"
     },
-    "popularityScore": 22
+    "popularityScore": 22,
+    "reclaimScore": 0
   }
 ]
 ```
@@ -216,6 +278,12 @@ otherwise an integer from 0 to 100 (see [Popularity score](#popularity-score)).
 The movie, series, and artist detail endpoints (`/api/v1/movies/{tmdbId}`,
 `/api/v1/series/{tvdbId}`, `/api/v1/artists/{musicBrainzId}`) return the same
 `popularityScore` for the same item.
+
+`reclaimScore` is an integer from 0 to 100, or `null` when playback is
+unavailable, `addedAt` is unknown, or plays have no last-played time (see
+[Reclaim score](#reclaim-score)). The example scores 0 because 123456 bytes is
+too small to be worth reclaiming. The detail endpoints return the same
+`reclaimScore` for the same item.
 
 ### Start a sync
 

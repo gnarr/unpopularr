@@ -62,6 +62,7 @@ function ArtistDetail({ data }: { data: ArtistDetails }) {
         addedAt={data.addedAt}
         playback={data.playback}
         popularityScore={data.popularityScore}
+        reclaimScore={data.reclaimScore}
       />
 
       <section className="rounded-lg border border-slate-800 bg-slate-900/40">

@@ -946,27 +946,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn popularity_score_is_consistent_across_catalog_and_details() {
+    async fn scores_are_consistent_across_catalog_and_details() {
         let (app, pool) = minimal_app_with_pool().await;
         insert_instances(&pool, "radarr").await;
+        // 50 GiB, in the library for exactly two maturity half-lives.
         for sql in [
             r#"
             INSERT INTO movie_snapshots
-                (instance_id, tmdb_id, title, year, size_on_disk_bytes, file_count)
-            VALUES ('a', 42, 'Movie', 2020, 100, 1)
+                (instance_id, tmdb_id, title, year, size_on_disk_bytes, file_count, added_at)
+            VALUES ('a', 42, 'Movie', 2020, ?1, 1, ?2)
             "#,
             r#"
             INSERT INTO series_snapshots
-                (instance_id, tvdb_id, title, year, size_on_disk_bytes, file_count)
-            VALUES ('a', 55, 'Show', 2020, 100, 1)
+                (instance_id, tvdb_id, title, year, size_on_disk_bytes, file_count, added_at)
+            VALUES ('a', 55, 'Show', 2020, ?1, 1, ?2)
             "#,
             r#"
             INSERT INTO artist_snapshots
-                (instance_id, musicbrainz_id, name, size_on_disk_bytes, file_count)
-            VALUES ('a', 'artist-1', 'Artist', 100, 1)
+                (instance_id, musicbrainz_id, name, size_on_disk_bytes, file_count, added_at)
+            VALUES ('a', 'artist-1', 'Artist', ?1, 1, ?2)
             "#,
         ] {
             sqlx::query(sql)
+                .bind(50_i64 << 30)
+                .bind(chrono::Utc::now() - chrono::Days::new(360))
                 .execute(&pool)
                 .await
                 .expect("insert content");
@@ -985,30 +988,42 @@ mod tests {
                     .expect("content array")
                     .iter()
                     .find(|item| item["contentType"] == content_type)
-                    .expect("listed item")["popularityScore"]
-                    .clone();
+                    .expect("listed item");
                 let (_, details) = get_json(&app, detail_uri).await;
-                assert_eq!(listed, details["popularityScore"], "{content_type}");
-                scores.push(listed);
+                let score = |item: &Value| {
+                    (
+                        item["popularityScore"].clone(),
+                        item["reclaimScore"].clone(),
+                    )
+                };
+                assert_eq!(score(listed), score(&details), "{content_type}");
+                scores.push(score(listed));
             }
             scores
         };
 
         // Unavailable playback is null, never zero: first with no source,
         // then with a source that has not completed a sync.
-        assert!(scores().await.iter().all(Value::is_null));
+        let unavailable = (Value::Null, Value::Null);
+        assert!(scores().await.iter().all(|score| *score == unavailable));
         sqlx::query("INSERT INTO playback_sources (id, provider) VALUES ('plex', 'tautulli')")
             .execute(&pool)
             .await
             .expect("insert playback source");
-        assert!(scores().await.iter().all(Value::is_null));
+        assert!(scores().await.iter().all(|score| *score == unavailable));
 
         sqlx::query("UPDATE playback_sources SET last_successful_sync_at = ?")
             .bind(chrono::Utc::now())
             .execute(&pool)
             .await
             .expect("mark playback synced");
-        assert!(scores().await.iter().all(|score| score == 0));
+        // Never played: 100 · (1 − 2^(−360/180)) · 50/55 = 68.18.
+        assert!(
+            scores()
+                .await
+                .iter()
+                .all(|score| *score == (serde_json::json!(0), serde_json::json!(68)))
+        );
 
         // Today plus exactly one half-life ago weigh 1 + 0.5:
         // 100 · (1 − e^(−1.5/5)) = 25.92.
@@ -1033,8 +1048,29 @@ mod tests {
                 .await
                 .expect("insert playback event");
             }
+            sqlx::query(
+                r#"
+                INSERT INTO playback_snapshots (
+                    source_id, content_type, content_id, play_count,
+                    play_duration_seconds, last_played_at
+                )
+                VALUES ('plex', ?1, ?2, 2, 120, ?3)
+                "#,
+            )
+            .bind(content_type)
+            .bind(content_id)
+            .bind(chrono::Utc::now())
+            .execute(&pool)
+            .await
+            .expect("insert playback snapshot");
         }
-        assert!(scores().await.iter().all(|score| score == 26));
+        // Played today, so nothing is worth reclaiming.
+        assert!(
+            scores()
+                .await
+                .iter()
+                .all(|score| *score == (serde_json::json!(26), serde_json::json!(0)))
+        );
     }
 
     #[tokio::test]

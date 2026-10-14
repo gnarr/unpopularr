@@ -4,6 +4,7 @@ use chrono::{DateTime, NaiveDate, Utc};
 use serde::Serialize;
 
 use super::popularity::popularity_score;
+use super::reclaim::reclaim_score;
 use crate::collection::earliest;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -283,6 +284,9 @@ pub struct SeriesDetails {
     /// Recency-weighted 0–100 score of active playback days (see
     /// [`popularity_score`]). `None` when playback is unavailable.
     pub popularity_score: Option<u8>,
+    /// How attractive the item is to delete to reclaim disk space, 0–100
+    /// (see [`reclaim_score`]). `None` when an input is unknown.
+    pub reclaim_score: Option<u8>,
     /// Series-level plays not attributable to an episode cell: legacy
     /// aggregates, events without episode positions, and specials. `None` when
     /// playback is unavailable.
@@ -318,6 +322,9 @@ pub struct MovieDetails {
     /// Recency-weighted 0–100 score of active playback days (see
     /// [`popularity_score`]). `None` when playback is unavailable.
     pub popularity_score: Option<u8>,
+    /// How attractive the item is to delete to reclaim disk space, 0–100
+    /// (see [`reclaim_score`]). `None` when an input is unknown.
+    pub reclaim_score: Option<u8>,
     /// Oldest acquisition hint across instances, and the plot's left edge.
     /// `None` until a re-sync populates it.
     pub added_at: Option<DateTime<Utc>>,
@@ -371,6 +378,9 @@ pub struct ArtistDetails {
     /// Recency-weighted 0–100 score of active playback days (see
     /// [`popularity_score`]). `None` when playback is unavailable.
     pub popularity_score: Option<u8>,
+    /// How attractive the item is to delete to reclaim disk space, 0–100
+    /// (see [`reclaim_score`]). `None` when an input is unknown.
+    pub reclaim_score: Option<u8>,
     /// Per-user playback, most plays first. Empty when playback is unavailable.
     pub user_playback: Vec<UserPlayback>,
     /// Plays not attributable to a user: legacy aggregates and events stored
@@ -395,6 +405,7 @@ pub enum ContentItem {
         year: i64,
         playback: Option<PlaybackMetrics>,
         popularity_score: Option<u8>,
+        reclaim_score: Option<u8>,
     },
     Series {
         display_name: String,
@@ -407,6 +418,7 @@ pub enum ContentItem {
         seasons_with_files: i64,
         playback: Option<PlaybackMetrics>,
         popularity_score: Option<u8>,
+        reclaim_score: Option<u8>,
     },
     Artist {
         display_name: String,
@@ -418,6 +430,7 @@ pub enum ContentItem {
         albums_with_files: i64,
         playback: Option<PlaybackMetrics>,
         popularity_score: Option<u8>,
+        reclaim_score: Option<u8>,
     },
 }
 
@@ -456,25 +469,31 @@ fn deep_link_path(route_base: &str, slug: &str) -> Option<String> {
     (!slug.is_empty()).then(|| format!("{route_base}/{slug}"))
 }
 
-/// `today` is the UTC date every popularity score in the list is measured
-/// against, captured once so all items age consistently.
+/// `today` is the UTC date every popularity and reclaim score in the list is
+/// measured against, captured once so all items age consistently.
 pub fn aggregate(mut sources: CatalogSources, today: NaiveDate) -> Vec<ContentItem> {
     sources.movies.sort_by_key(|source| source.config_order);
     sources.series.sort_by_key(|source| source.config_order);
     sources.artists.sort_by_key(|source| source.config_order);
     let playback = sources.playback;
-    let summarize = |item: Option<&ItemPlayback>| {
-        (
-            playback_metrics(
-                playback.available,
-                item.and_then(|item| item.metrics.as_ref()),
-            ),
-            popularity(
-                playback.available,
-                item.map_or(&[], |item| &item.active_days),
-                today,
-            ),
-        )
+    let summarize = |item: Option<&ItemPlayback>, added_at, size_on_disk_bytes| {
+        let metrics = playback_metrics(
+            playback.available,
+            item.and_then(|item| item.metrics.as_ref()),
+        );
+        let popularity_score = popularity(
+            playback.available,
+            item.map_or(&[], |item| &item.active_days),
+            today,
+        );
+        let reclaim_score = reclaim_score(
+            popularity_score,
+            metrics.as_ref(),
+            added_at,
+            size_on_disk_bytes,
+            today,
+        );
+        (metrics, popularity_score, reclaim_score)
     };
 
     let mut movies = BTreeMap::<i64, MovieAggregate>::new();
@@ -551,7 +570,11 @@ pub fn aggregate(mut sources: CatalogSources, today: NaiveDate) -> Vec<ContentIt
 
     let mut content = Vec::with_capacity(movies.len() + series.len() + artists.len());
     content.extend(movies.into_iter().filter_map(|(tmdb_id, movie)| {
-        let (metrics, popularity_score) = summarize(playback.movies.get(&tmdb_id));
+        let (metrics, popularity_score, reclaim_score) = summarize(
+            playback.movies.get(&tmdb_id),
+            movie.added_at,
+            movie.size_on_disk_bytes,
+        );
         (movie.file_count > 0).then_some(ContentItem::Movie {
             display_name: movie.title,
             size_on_disk_bytes: movie.size_on_disk_bytes,
@@ -562,10 +585,15 @@ pub fn aggregate(mut sources: CatalogSources, today: NaiveDate) -> Vec<ContentIt
             year: movie.year,
             playback: metrics,
             popularity_score,
+            reclaim_score,
         })
     }));
     content.extend(series.into_iter().filter_map(|(tvdb_id, series)| {
-        let (metrics, popularity_score) = summarize(playback.series.get(&tvdb_id));
+        let (metrics, popularity_score, reclaim_score) = summarize(
+            playback.series.get(&tvdb_id),
+            series.added_at,
+            series.size_on_disk_bytes,
+        );
         (series.file_count > 0).then_some(ContentItem::Series {
             display_name: series.title,
             size_on_disk_bytes: series.size_on_disk_bytes,
@@ -577,10 +605,15 @@ pub fn aggregate(mut sources: CatalogSources, today: NaiveDate) -> Vec<ContentIt
             seasons_with_files: i64::try_from(series.season_numbers.len()).unwrap_or(i64::MAX),
             playback: metrics,
             popularity_score,
+            reclaim_score,
         })
     }));
     content.extend(artists.into_iter().filter_map(|(music_brainz_id, artist)| {
-        let (metrics, popularity_score) = summarize(playback.artists.get(&music_brainz_id));
+        let (metrics, popularity_score, reclaim_score) = summarize(
+            playback.artists.get(&music_brainz_id),
+            artist.added_at,
+            artist.size_on_disk_bytes,
+        );
         (artist.file_count > 0).then_some(ContentItem::Artist {
             display_name: artist.name,
             size_on_disk_bytes: artist.size_on_disk_bytes,
@@ -592,6 +625,7 @@ pub fn aggregate(mut sources: CatalogSources, today: NaiveDate) -> Vec<ContentIt
                 .unwrap_or(i64::MAX),
             playback: metrics,
             popularity_score,
+            reclaim_score,
         })
     }));
 
@@ -745,6 +779,13 @@ pub fn aggregate_series(
 
     let playback = playback_metrics(sources.playback_available, sources.playback.as_ref());
     let popularity_score = popularity(sources.playback_available, &sources.active_days, today);
+    let reclaim_score = reclaim_score(
+        popularity_score,
+        playback.as_ref(),
+        added_at,
+        size_on_disk_bytes,
+        today,
+    );
     // Clamped: re-synced events inside the legacy aggregate's covered window can
     // be counted both per episode and in the series total's legacy share.
     let unattributed_play_count = playback
@@ -765,6 +806,7 @@ pub fn aggregate_series(
         instance_details,
         playback,
         popularity_score,
+        reclaim_score,
         unattributed_play_count,
         user_playback: sources.user_playback,
         unknown_user_play_count,
@@ -812,6 +854,13 @@ pub fn aggregate_movie(mut sources: MovieDetailsSources, today: NaiveDate) -> Op
 
     let playback = playback_metrics(sources.playback_available, sources.playback.as_ref());
     let popularity_score = popularity(sources.playback_available, &sources.active_days, today);
+    let reclaim_score = reclaim_score(
+        popularity_score,
+        playback.as_ref(),
+        added_at,
+        size_on_disk_bytes,
+        today,
+    );
     let unknown_user_play_count =
         unknown_user_play_count(playback.as_ref(), &sources.user_playback);
 
@@ -825,6 +874,7 @@ pub fn aggregate_movie(mut sources: MovieDetailsSources, today: NaiveDate) -> Op
         instance_details,
         playback,
         popularity_score,
+        reclaim_score,
         added_at,
         daily_playback: sources.daily_playback,
         user_playback: sources.user_playback,
@@ -904,6 +954,13 @@ pub fn aggregate_artist(
 
     let playback = playback_metrics(sources.playback_available, sources.playback.as_ref());
     let popularity_score = popularity(sources.playback_available, &sources.active_days, today);
+    let reclaim_score = reclaim_score(
+        popularity_score,
+        playback.as_ref(),
+        added_at,
+        size_on_disk_bytes,
+        today,
+    );
     let unknown_user_play_count =
         unknown_user_play_count(playback.as_ref(), &sources.user_playback);
 
@@ -918,6 +975,7 @@ pub fn aggregate_artist(
         instance_details,
         playback,
         popularity_score,
+        reclaim_score,
         user_playback: sources.user_playback,
         unknown_user_play_count,
     })
@@ -1430,6 +1488,112 @@ mod tests {
             assert_eq!(build(true, Vec::new()), Some(0));
             assert_eq!(build(true, days.clone()), Some(26));
         }
+    }
+
+    fn reclaim_score(item: &ContentItem) -> Option<u8> {
+        match item {
+            ContentItem::Artist { reclaim_score, .. }
+            | ContentItem::Movie { reclaim_score, .. }
+            | ContentItem::Series { reclaim_score, .. } => *reclaim_score,
+        }
+    }
+
+    #[test]
+    fn detail_reclaim_matches_the_catalog_for_every_type() {
+        const SIZE: i64 = 50 << 30;
+        let last_played = today() - chrono::Days::new(365);
+        let metrics = PlaybackMetrics {
+            play_count: 1,
+            play_duration_seconds: 60,
+            last_played_at: last_played.and_hms_opt(12, 0, 0).map(|at| at.and_utc()),
+        };
+        let added = (today() - chrono::Days::new(730))
+            .and_hms_opt(12, 0, 0)
+            .map(|at| at.and_utc());
+        let movie = |added_at| MovieSource {
+            added_at,
+            ..movie_source("Movie", SIZE, 1, instance("one", "One"), 0)
+        };
+        let series = |added_at| SeriesSource {
+            added_at,
+            ..series_source("Show", SIZE, 1, vec![1], instance("one", "One"), 0)
+        };
+        let artist = |added_at| ArtistSource {
+            added_at,
+            ..artist_source("Artist", SIZE, 1, vec!["a"], instance("one", "One"), 0)
+        };
+
+        let catalog = |added_at| {
+            let played = || ItemPlayback {
+                metrics: Some(metrics.clone()),
+                active_days: vec![last_played],
+            };
+            aggregate(
+                CatalogSources {
+                    movies: vec![movie(added_at)],
+                    series: vec![series(added_at)],
+                    artists: vec![artist(added_at)],
+                    playback: CatalogPlayback {
+                        available: true,
+                        movies: BTreeMap::from([(10, played())]),
+                        series: BTreeMap::from([(1, played())]),
+                        artists: BTreeMap::from([("artist-1".to_owned(), played())]),
+                    },
+                },
+                today(),
+            )
+            .iter()
+            .map(|item| (item.type_name(), reclaim_score(item)))
+            .collect::<BTreeMap<_, _>>()
+        };
+        let details = |added_at| {
+            let movie_details = aggregate_movie(
+                MovieDetailsSources {
+                    instances: vec![movie(added_at)],
+                    active_days: vec![last_played],
+                    playback_available: true,
+                    playback: Some(metrics.clone()),
+                    ..MovieDetailsSources::default()
+                },
+                today(),
+            )
+            .expect("movie details");
+            let series_details = aggregate_series(
+                SeriesDetailsSources {
+                    instances: vec![series(added_at)],
+                    active_days: vec![last_played],
+                    playback_available: true,
+                    playback: Some(metrics.clone()),
+                    ..SeriesDetailsSources::default()
+                },
+                today(),
+            )
+            .expect("series details");
+            let artist_details = aggregate_artist(
+                ArtistDetailsSources {
+                    instances: vec![artist(added_at)],
+                    active_days: vec![last_played],
+                    playback_available: true,
+                    playback: Some(metrics.clone()),
+                    ..ArtistDetailsSources::default()
+                },
+                today(),
+            )
+            .expect("artist details");
+            BTreeMap::from([
+                ("artist", artist_details.reclaim_score),
+                ("movie", movie_details.reclaim_score),
+                ("series", series_details.reclaim_score),
+            ])
+        };
+
+        // Popularity 5 (one active day a year ago):
+        // 100 · 0.95 · (1 − 2^(−365/180)) · (1 − 2^(−730/180)) · 50/55 = 61.26
+        assert_eq!(catalog(added), details(added));
+        assert!(catalog(added).values().all(|score| *score == Some(61)));
+        // An unknown library age is unknown, not a guess.
+        assert_eq!(catalog(None), details(None));
+        assert!(catalog(None).values().all(Option::is_none));
     }
 
     fn series_source(

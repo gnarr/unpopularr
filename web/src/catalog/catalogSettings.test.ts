@@ -84,10 +84,12 @@ describe('catalogSettings', () => {
     expect(parseCatalogSettings(raw).sorting).toEqual([{ id: 'addedAt', desc: true }])
   })
 
-  it('keeps a sort on the popularity column in either direction', () => {
-    for (const desc of [false, true]) {
-      const raw = JSON.stringify({ sorting: [{ id: 'popularity', desc }] })
-      expect(parseCatalogSettings(raw).sorting).toEqual([{ id: 'popularity', desc }])
+  it('keeps a sort on the score columns in either direction', () => {
+    for (const id of ['popularity', 'reclaim']) {
+      for (const desc of [false, true]) {
+        const raw = JSON.stringify({ sorting: [{ id, desc }] })
+        expect(parseCatalogSettings(raw).sorting).toEqual([{ id, desc }])
+      }
     }
   })
 })
