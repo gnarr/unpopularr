@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [0.11.1](https://github.com/gnarr/unpopularr/compare/24e8b51c42d5a08cecd9b5cfcd49d74618004783..0.11.1) - 2026-10-14
+#### Performance
+- (**catalog**) limit active day reads to catalog items - ([24e8b51](https://github.com/gnarr/unpopularr/commit/24e8b51c42d5a08cecd9b5cfcd49d74618004783)) - Gunnar Cortes
+
+- - -
+
 ## [0.11.0](https://github.com/gnarr/unpopularr/compare/c97122013d3f5854374a764ec3c34d7efb0d60c0..0.11.0) - 2026-10-13
 #### Features
 - (**catalog**) add popularity scoring - ([c971220](https://github.com/gnarr/unpopularr/commit/c97122013d3f5854374a764ec3c34d7efb0d60c0)) - Gunnar Cortes
