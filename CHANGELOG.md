@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [0.12.0](https://github.com/gnarr/unpopularr/compare/8cd333455f559361715e997307b930e5be6a86f5..0.12.0) - 2026-10-14
+#### Features
+- (**catalog**) add reclaim scoring - ([8cd3334](https://github.com/gnarr/unpopularr/commit/8cd333455f559361715e997307b930e5be6a86f5)) - Gunnar Cortes
+
+- - -
+
 ## [0.11.1](https://github.com/gnarr/unpopularr/compare/24e8b51c42d5a08cecd9b5cfcd49d74618004783..0.11.1) - 2026-10-14
 #### Performance
 - (**catalog**) limit active day reads to catalog items - ([24e8b51](https://github.com/gnarr/unpopularr/commit/24e8b51c42d5a08cecd9b5cfcd49d74618004783)) - Gunnar Cortes
