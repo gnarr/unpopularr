@@ -3,6 +3,7 @@ mod application;
 mod domain;
 mod popularity;
 mod ports;
+mod reclaim;
 
 pub use application::CatalogService;
 pub use domain::{

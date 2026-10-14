@@ -66,6 +66,11 @@ export const POPULARITY_HINT =
   'halves every 180 days. Watch time, size and age are ignored. 0 means no recorded ' +
   'playback lately, not proof that nobody watched.'
 
+// Mirrors the README's "Reclaim score" section.
+export const RECLAIM_HINT =
+  'How attractive this is to remove to reclaim disk space, 0–100. High scores mean it is ' +
+  'large, old, idle and unpopular. Recently played or newly added media is protected.'
+
 export function playbackAvailable(items: ContentItem[]): boolean {
   return items.some((item) => item.playback !== null)
 }

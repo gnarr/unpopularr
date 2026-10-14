@@ -3,7 +3,7 @@ import { InstanceChips } from './InstanceChips'
 import { StatCard } from './StatCard'
 import { TypeBadge } from './TypeBadge'
 import { absoluteTime, formatBytes, formatDuration, relativeTime } from '../lib/format'
-import { POPULARITY_HINT } from '../lib/content'
+import { POPULARITY_HINT, RECLAIM_HINT } from '../lib/content'
 
 interface DetailHeaderCardProps {
   type: ContentType
@@ -18,6 +18,8 @@ interface DetailHeaderCardProps {
   playback: PlaybackMetrics | null
   // Null when playback is unavailable, like `playback`.
   popularityScore: number | null
+  // Null when any input is unknown, not only playback.
+  reclaimScore: number | null
 }
 
 export function DetailHeaderCard({
@@ -30,6 +32,7 @@ export function DetailHeaderCard({
   addedAt,
   playback,
   popularityScore,
+  reclaimScore,
 }: DetailHeaderCardProps) {
   const neverPlayed = playback !== null && playback.playCount === 0
 
@@ -44,7 +47,7 @@ export function DetailHeaderCard({
           <InstanceChips instances={instances} />
         </div>
       </header>
-      <div className="grid grid-cols-2 gap-4 p-4 sm:grid-cols-5">
+      <div className="grid grid-cols-2 gap-4 p-4 sm:grid-cols-3 lg:grid-cols-6">
         <StatCard label="Total size" value={formatBytes(sizeOnDiskBytes)} />
         <StatCard label="Files" value={fileCount.toLocaleString()} />
         {playback !== null && (
@@ -62,6 +65,9 @@ export function DetailHeaderCard({
         )}
         {popularityScore !== null && (
           <StatCard label="Popularity" value={`${popularityScore} / 100`} hint={POPULARITY_HINT} />
+        )}
+        {reclaimScore !== null && (
+          <StatCard label="Reclaim" value={`${reclaimScore} / 100`} hint={RECLAIM_HINT} />
         )}
       </div>
       {(addedAt !== null || playback?.lastPlayedAt) && (

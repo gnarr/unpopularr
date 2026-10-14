@@ -3,6 +3,7 @@ import { Link } from 'react-router'
 import type { ContentItem } from '../api/types'
 import {
   POPULARITY_HINT,
+  RECLAIM_HINT,
   detailCount,
   detailLabel,
   detailPath,
@@ -153,22 +154,33 @@ export function buildColumns(hasPlayback: boolean): Array<ColumnDef<ContentItem,
         },
       },
     ),
-    helper.accessor((item) => item.popularityScore ?? undefined, {
-      id: 'popularity',
-      header: () => <span title={POPULARITY_HINT}>Popularity</span>,
-      sortUndefined: 'last',
-      meta: { align: 'right' },
-      cell: (ctx) => {
-        const score = ctx.row.original.popularityScore
-        if (score === null) {
-          return (
-            <span className="text-slate-600" title="Playback data unavailable">
-              —
-            </span>
-          )
-        }
-        return <span className="tabular-nums">{score}</span>
-      },
-    }),
+    scoreColumn('popularity', 'Popularity', POPULARITY_HINT, (item) => item.popularityScore),
+    scoreColumn('reclaim', 'Reclaim', RECLAIM_HINT, (item) => item.reclaimScore),
   ]
+}
+
+// A 0–100 backend score. Unknown (`null`) sorts last in both directions.
+function scoreColumn(
+  id: string,
+  label: string,
+  hint: string,
+  score: (item: ContentItem) => number | null,
+): ColumnDef<ContentItem, any> {
+  return helper.accessor((item) => score(item) ?? undefined, {
+    id,
+    header: () => <span title={hint}>{label}</span>,
+    sortUndefined: 'last',
+    meta: { align: 'right' },
+    cell: (ctx) => {
+      const value = score(ctx.row.original)
+      if (value === null) {
+        return (
+          <span className="text-slate-600" title="Not enough data to score">
+            —
+          </span>
+        )
+      }
+      return <span className="tabular-nums">{value}</span>
+    },
+  })
 }

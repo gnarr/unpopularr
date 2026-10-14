@@ -33,8 +33,11 @@ test('shows size, file, and playback stats without an instance table', async ({ 
   await expect(page.getByText('1h 30m')).toBeVisible()
   // The mock play has a fixed date, so its score decays with the calendar;
   // assert the card and its shape rather than a value.
-  await expect(page.getByText('Popularity', { exact: true })).toBeVisible()
-  await expect(page.getByText(/^\d{1,3} \/ 100$/)).toBeVisible()
+  const popularityCard = page.getByText('Popularity', { exact: true }).locator('..')
+  await expect(popularityCard).toHaveText(/^Popularity\d{1,3} \/ 100$/)
+  // At 2.4 KiB the movie is never worth reclaiming, whatever the date.
+  const reclaimCard = page.getByText('Reclaim', { exact: true }).locator('..')
+  await expect(reclaimCard).toHaveText('Reclaim0 / 100')
   await expect(page.getByText('Last played')).toBeVisible()
   await expect(page.getByText('Added')).toBeVisible()
 

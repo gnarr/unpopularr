@@ -63,6 +63,7 @@ function MovieDetail({ data }: { data: MovieDetails }) {
         addedAt={data.addedAt}
         playback={data.playback}
         popularityScore={data.popularityScore}
+        reclaimScore={data.reclaimScore}
       />
 
       {data.playback !== null && data.dailyPlayback.length > 0 && (

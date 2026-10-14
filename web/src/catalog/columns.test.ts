@@ -8,7 +8,9 @@ import {
 import type { MovieItem } from '../api/types'
 import { buildColumns } from './columns'
 
-function movie(tmdbId: number, popularityScore: number | null): MovieItem {
+type Scores = Pick<MovieItem, 'popularityScore' | 'reclaimScore'>
+
+function movie(tmdbId: number, scores: Partial<Scores>): MovieItem {
   return {
     contentType: 'movie',
     displayName: `Movie ${tmdbId}`,
@@ -17,15 +19,21 @@ function movie(tmdbId: number, popularityScore: number | null): MovieItem {
     instances: [],
     addedAt: null,
     playback: { playCount: 0, playDurationSeconds: 0, lastPlayedAt: null },
-    popularityScore,
+    popularityScore: null,
+    reclaimScore: null,
     tmdbId,
     year: 2020,
+    ...scores,
   }
 }
 
 // Drives the real column definitions through react-table's sorted row model
 // without rendering, so the test covers the accessor and `sortUndefined`.
-function sortedScores(items: MovieItem[], sorting: SortingState): Array<number | null> {
+function sortedScores(
+  items: MovieItem[],
+  sorting: SortingState,
+  score: keyof Scores,
+): Array<number | null> {
   const table = createTable({
     data: items,
     columns: buildColumns(true),
@@ -36,23 +44,44 @@ function sortedScores(items: MovieItem[], sorting: SortingState): Array<number |
     getSortedRowModel: getSortedRowModel(),
   })
   table.setOptions((prev) => ({ ...prev, state: { ...table.initialState, sorting } }))
-  return table.getRowModel().rows.map((row) => row.original.popularityScore)
+  return table.getRowModel().rows.map((row) => row.original[score])
 }
 
+const columnIds = (hasPlayback: boolean) => buildColumns(hasPlayback).map((column) => column.id)
+
 describe('popularity column', () => {
-  const items = [movie(1, 40), movie(2, null), movie(3, 0), movie(4, 90)]
+  const items = [40, null, 0, 90].map((popularityScore, id) => movie(id, { popularityScore }))
+  const sorted = (desc: boolean) =>
+    sortedScores(items, [{ id: 'popularity', desc }], 'popularityScore')
 
   it('sorts ascending with unavailable scores last', () => {
-    expect(sortedScores(items, [{ id: 'popularity', desc: false }])).toEqual([0, 40, 90, null])
+    expect(sorted(false)).toEqual([0, 40, 90, null])
   })
 
   it('sorts descending with unavailable scores still last', () => {
-    expect(sortedScores(items, [{ id: 'popularity', desc: true }])).toEqual([90, 40, 0, null])
+    expect(sorted(true)).toEqual([90, 40, 0, null])
   })
 
   it('only exists when playback data is available', () => {
-    const ids = (hasPlayback: boolean) => buildColumns(hasPlayback).map((column) => column.id)
-    expect(ids(true)).toContain('popularity')
-    expect(ids(false)).not.toContain('popularity')
+    expect(columnIds(true)).toContain('popularity')
+    expect(columnIds(false)).not.toContain('popularity')
+  })
+})
+
+describe('reclaim column', () => {
+  const items = [12, null, 85, 0, null].map((reclaimScore, id) => movie(id, { reclaimScore }))
+  const sorted = (desc: boolean) => sortedScores(items, [{ id: 'reclaim', desc }], 'reclaimScore')
+
+  it('sorts ascending with unavailable scores last', () => {
+    expect(sorted(false)).toEqual([0, 12, 85, null, null])
+  })
+
+  it('sorts descending with unavailable scores still last', () => {
+    expect(sorted(true)).toEqual([85, 12, 0, null, null])
+  })
+
+  it('only exists when playback data is available', () => {
+    expect(columnIds(true)).toContain('reclaim')
+    expect(columnIds(false)).not.toContain('reclaim')
   })
 })

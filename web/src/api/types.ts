@@ -52,6 +52,9 @@ interface ContentBase {
   // Recency-weighted 0–100 score of the days with playback. `null` when
   // playback is unavailable (as with `playback`); 0 means none recorded lately.
   popularityScore: number | null
+  // 0–100: how attractive this is to delete to reclaim disk space. `null` when
+  // playback is unavailable, `addedAt` is unknown, or plays have no date.
+  reclaimScore: number | null
 }
 
 export interface MovieItem extends ContentBase {
@@ -125,6 +128,9 @@ export interface SeriesDetails {
   // Recency-weighted 0–100 score of the days with playback. `null` when
   // playback is unavailable (as with `playback`); 0 means none recorded lately.
   popularityScore: number | null
+  // 0–100: how attractive this is to delete to reclaim disk space. `null` when
+  // playback is unavailable, `addedAt` is unknown, or plays have no date.
+  reclaimScore: number | null
   // Series-level plays with no episode cell to land on (legacy aggregates,
   // events without positions, specials). Null when playback is unavailable.
   unattributedPlayCount: number | null
@@ -155,6 +161,9 @@ export interface MovieDetails {
   // Recency-weighted 0–100 score of the days with playback. `null` when
   // playback is unavailable (as with `playback`); 0 means none recorded lately.
   popularityScore: number | null
+  // 0–100: how attractive this is to delete to reclaim disk space. `null` when
+  // playback is unavailable, `addedAt` is unknown, or plays have no date.
+  reclaimScore: number | null
   // Oldest acquisition date across instances, and the plot's left edge.
   // `null` until a re-sync populates it (fall back to the first played day).
   addedAt: string | null
@@ -200,6 +209,9 @@ export interface ArtistDetails {
   // Recency-weighted 0–100 score of the days with playback. `null` when
   // playback is unavailable (as with `playback`); 0 means none recorded lately.
   popularityScore: number | null
+  // 0–100: how attractive this is to delete to reclaim disk space. `null` when
+  // playback is unavailable, `addedAt` is unknown, or plays have no date.
+  reclaimScore: number | null
   // Per-user playback, most plays first. Empty when playback is unavailable.
   userPlayback: UserPlayback[]
   // Plays not attributable to a user (legacy aggregates, events synced before

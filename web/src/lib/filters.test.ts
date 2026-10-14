@@ -19,6 +19,7 @@ function movie(overrides: Partial<MovieItem> = {}): MovieItem {
     addedAt: null,
     playback: null,
     popularityScore: null,
+    reclaimScore: null,
     tmdbId: 603,
     year: 1999,
     ...overrides,

@@ -69,6 +69,7 @@ function SeriesDetail({ data }: { data: SeriesDetails }) {
         addedAt={data.addedAt}
         playback={playback}
         popularityScore={data.popularityScore}
+        reclaimScore={data.reclaimScore}
       />
 
       {playback !== null && watchStrip.hasWatchData && (
