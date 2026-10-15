@@ -66,6 +66,12 @@ database makes every series look days old; reading the file's own timestamps
 recovers the real date. This is off by default because it needs filesystem
 access unpopularr otherwise never has.
 
+The probe only reads files that Sonarr or Radarr has no import history for,
+meaning media that was already on disk before the *arr app knew about it. A
+file the *arr app downloaded and imported is dated by that import: unpacked
+releases often keep their original timestamps, which would otherwise make a
+series downloaded today look years old.
+
 Mount your media **read-only** — the probe only stats files, it never opens or
 writes them:
 

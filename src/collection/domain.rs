@@ -40,10 +40,13 @@ pub struct MovieSnapshot {
     pub file_count: i64,
     /// Oldest acquisition hint this instance reports: Radarr's library `added`
     /// folded with the movie file's `dateAdded`, and with the file's timestamps
-    /// when the filesystem probe is configured. `None` when nothing reports one.
+    /// when the filesystem probe gets to read them. `None` when nothing reports
+    /// one.
     pub added_at: Option<DateTime<Utc>>,
-    /// Radarr's path to the movie file, for the filesystem probe. Transport
-    /// only: never persisted, never serialized.
+    /// Radarr's path to the movie file, for the filesystem probe. `None` when
+    /// Radarr imported the file from a download: unpacked releases often keep
+    /// their original timestamps, so the import, not the file, says when it
+    /// arrived. Transport only: never persisted, never serialized.
     pub file_path: Option<String>,
 }
 
@@ -83,8 +86,10 @@ pub struct SeriesEpisodeSnapshot {
     /// When this episode's file was acquired. `None` for an episode without a
     /// file, or when Sonarr omits the date.
     pub added_at: Option<DateTime<Utc>>,
-    /// Sonarr's path to the episode file, for the filesystem probe. Transport
-    /// only: never persisted, never serialized.
+    /// Sonarr's path to the episode file, for the filesystem probe. `None` when
+    /// Sonarr imported the file from a download, for the same reason as
+    /// [`MovieSnapshot::file_path`]. Transport only: never persisted, never
+    /// serialized.
     pub file_path: Option<String>,
 }
 
