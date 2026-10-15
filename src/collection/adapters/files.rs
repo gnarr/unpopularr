@@ -4,7 +4,9 @@
 //! file arrived: rebuild a Sonarr database and every series claims to be days
 //! old. When `[media_probe]` is configured this probe stats the files those apps
 //! point at and folds their timestamps into the same acquisition date, so the
-//! oldest evidence still wins.
+//! oldest evidence still wins. Files an *arr app imported from a download never
+//! reach it: their timestamps are often the release's, kept through unpacking,
+//! and the import already dates them.
 //!
 //! Nothing here can fail a sync. Every unreadable path simply contributes no
 //! hint, and the counters it keeps exist to make a wrong path mapping visible in
