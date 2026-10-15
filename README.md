@@ -70,7 +70,8 @@ The probe only reads files that Sonarr or Radarr has no import history for,
 meaning media that was already on disk before the *arr app knew about it. A
 file the *arr app downloaded and imported is dated by that import: unpacked
 releases often keep their original timestamps, which would otherwise make a
-series downloaded today look years old.
+series downloaded today look years old. Import history is only requested while
+the probe is enabled.
 
 Mount your media **read-only** — the probe only stats files, it never opens or
 writes them:

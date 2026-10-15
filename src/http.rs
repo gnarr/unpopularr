@@ -237,7 +237,6 @@ mod tests {
                 ResponseTemplate::new(200)
                     .set_delay(Duration::from_millis(100))
                     .set_body_json(serde_json::json!([{
-                        "id": 1,
                         "tmdbId": 42,
                         "title": "Movie",
                         "year": 2024,
@@ -245,10 +244,6 @@ mod tests {
                         "statistics": {"movieFileCount": 1, "sizeOnDisk": 100}
                     }])),
             )
-            .mount(&server)
-            .await;
-        Mock::given(path("/api/v3/history/since"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
             .mount(&server)
             .await;
 

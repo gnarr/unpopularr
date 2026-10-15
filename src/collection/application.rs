@@ -39,7 +39,11 @@ impl SyncService {
     ) -> Self {
         Self {
             repository,
-            client,
+            client: if probe.is_some() {
+                client.with_import_history()
+            } else {
+                client
+            },
             instances,
             probe,
             sync_lock: Arc::new(Mutex::new(())),

@@ -21,12 +21,12 @@ const series = [
 ]
 
 const episodes = [
-  { id: 900, seasonNumber: 0, episodeNumber: 1, title: 'Special', hasFile: true, episodeFile: { size: 111, dateAdded: '2018-01-01T00:00:00Z', path: '/data/media/tv/Mock Show/s00e01.mkv' } },
-  { id: 911, seasonNumber: 1, episodeNumber: 1, title: 'Pilot', airDateUtc: '2020-01-01T00:00:00Z', hasFile: true, episodeFile: { size: 1000, dateAdded: '2021-03-04T00:00:00Z', path: '/data/media/tv/Mock Show/s01e01.mkv' } },
-  { id: 912, seasonNumber: 1, episodeNumber: 2, title: 'Growth', airDateUtc: '2020-01-08T00:00:00Z', hasFile: true, episodeFile: { size: 1200, dateAdded: '2022-05-06T00:00:00Z', path: '/data/media/tv/Mock Show/s01e02.mkv' } },
-  { id: 913, seasonNumber: 1, episodeNumber: 3, title: 'Deleted One', airDateUtc: '2020-01-15T00:00:00Z', hasFile: false },
-  { id: 921, seasonNumber: 2, episodeNumber: 1, title: 'Return', airDateUtc: '2021-01-01T00:00:00Z', hasFile: true, episodeFile: { size: 800, dateAdded: '2022-07-08T00:00:00Z', path: '/data/media/tv/Mock Show/s02e01.mkv' } },
-  { id: 922, seasonNumber: 2, episodeNumber: 2, title: 'Unaired Finale', airDateUtc: '2099-01-01T00:00:00Z', hasFile: false },
+  { seasonNumber: 0, episodeNumber: 1, title: 'Special', hasFile: true, episodeFile: { size: 111, dateAdded: '2018-01-01T00:00:00Z', path: '/data/media/tv/Mock Show/s00e01.mkv' } },
+  { seasonNumber: 1, episodeNumber: 1, title: 'Pilot', airDateUtc: '2020-01-01T00:00:00Z', hasFile: true, episodeFile: { size: 1000, dateAdded: '2021-03-04T00:00:00Z', path: '/data/media/tv/Mock Show/s01e01.mkv' } },
+  { seasonNumber: 1, episodeNumber: 2, title: 'Growth', airDateUtc: '2020-01-08T00:00:00Z', hasFile: true, episodeFile: { size: 1200, dateAdded: '2022-05-06T00:00:00Z', path: '/data/media/tv/Mock Show/s01e02.mkv' } },
+  { seasonNumber: 1, episodeNumber: 3, title: 'Deleted One', airDateUtc: '2020-01-15T00:00:00Z', hasFile: false },
+  { seasonNumber: 2, episodeNumber: 1, title: 'Return', airDateUtc: '2021-01-01T00:00:00Z', hasFile: true, episodeFile: { size: 800, dateAdded: '2022-07-08T00:00:00Z', path: '/data/media/tv/Mock Show/s02e01.mkv' } },
+  { seasonNumber: 2, episodeNumber: 2, title: 'Unaired Finale', airDateUtc: '2099-01-01T00:00:00Z', hasFile: false },
 ]
 
 const movies = [
@@ -115,8 +115,6 @@ createServer((req, res) => {
     return respond(url.searchParams.get('seriesId') === '9' ? episodes : [])
   }
   if (url.pathname === '/radarr/api/v3/movie') return respond(movies)
-  if (url.pathname === '/sonarr/api/v3/history/series') return respond([])
-  if (url.pathname === '/radarr/api/v3/history/since') return respond([])
   if (url.pathname === '/lidarr/api/v1/artist') return respond(artists)
   if (url.pathname === '/lidarr/api/v1/album') return respond(albums)
   if (url.pathname === '/taut/api/v2') {

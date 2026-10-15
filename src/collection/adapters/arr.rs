@@ -31,6 +31,9 @@ const DOWNLOAD_FOLDER_IMPORTED: &str = "3";
 #[derive(Clone)]
 pub struct ArrClient {
     client: Client,
+    /// Import history only decides which files the filesystem probe may read,
+    /// so without a probe it is never requested and cannot fail a sync.
+    import_history: bool,
 }
 
 impl ArrClient {
@@ -41,7 +44,19 @@ impl ArrClient {
             .user_agent(concat!("unpopularr/", env!("CARGO_PKG_VERSION")))
             .build()
             .context("failed to create HTTP client")?;
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            import_history: false,
+        })
+    }
+
+    /// Also asks Sonarr and Radarr which files they imported from a download,
+    /// and leaves those out of the snapshot's probe paths.
+    pub fn with_import_history(self) -> Self {
+        Self {
+            import_history: true,
+            ..self
+        }
     }
 
     pub async fn collect(&self, instance: &Instance) -> Result<Snapshot> {
@@ -53,11 +68,11 @@ impl ArrClient {
     }
 
     async fn collect_radarr(&self, instance: &Instance) -> Result<Snapshot> {
-        let (movies, imports): (Vec<RadarrMovie>, Vec<RadarrImport>) = tokio::try_join!(
+        let (movies, imported_files): (Vec<RadarrMovie>, _) = tokio::try_join!(
             self.get(instance, "api/v3/movie", &[("excludeLocalCovers", "true")]),
             // Movies are fetched in one request, so their history is too: one
             // per movie would turn a single library call into thousands.
-            self.get(
+            self.imported_files(
                 instance,
                 "api/v3/history/since",
                 &[
@@ -66,7 +81,6 @@ impl ArrClient {
                 ],
             )
         )?;
-        let imported: HashSet<i64> = imports.into_iter().map(|import| import.movie_id).collect();
 
         Ok(Snapshot::Movies(
             movies
@@ -92,7 +106,9 @@ impl ArrClient {
                             },
                         )),
                         added_at: earliest(movie.added, file.date_added),
-                        file_path: file.path.filter(|_| !imported.contains(&movie.id)),
+                        file_path: file
+                            .path
+                            .filter(|_| file.id.is_none_or(|id| !imported_files.contains(&id))),
                     }
                 })
                 .collect(),
@@ -123,15 +139,11 @@ impl ArrClient {
                     ("seriesId", series_id.as_str()),
                     ("eventType", DOWNLOAD_FOLDER_IMPORTED),
                 ];
-                let (episodes, imports): (Vec<SonarrEpisode>, Vec<SonarrImport>) = tokio::try_join!(
+                let (episodes, imported_files): (Vec<SonarrEpisode>, _) = tokio::try_join!(
                     self.get(instance, "api/v3/episode", &episode_query),
-                    self.get(instance, "api/v3/history/series", &history_query)
+                    self.imported_files(instance, "api/v3/history/series", &history_query)
                 )?;
-                let imported: HashSet<i64> = imports
-                    .into_iter()
-                    .map(|import| import.episode_id)
-                    .collect();
-                Ok::<_, anyhow::Error>((series, episodes, imported))
+                Ok::<_, anyhow::Error>((series, episodes, imported_files))
             })
             .buffered(MAX_CONCURRENT_EPISODE_REQUESTS)
             .try_collect::<Vec<_>>()
@@ -140,7 +152,7 @@ impl ArrClient {
         Ok(Snapshot::Series(
             series
                 .into_iter()
-                .map(|(series, episodes, imported)| {
+                .map(|(series, episodes, imported_files)| {
                     let statistics = series.statistics.unwrap_or_default();
                     let seasons = series
                         .seasons
@@ -164,7 +176,7 @@ impl ArrClient {
                     // Rolled up from the snapshots rather than the raw response
                     // so specials, which `episode_snapshots` drops, cannot age
                     // a series the way they do not count towards its size.
-                    let episodes = episode_snapshots(episodes, &imported);
+                    let episodes = episode_snapshots(episodes, &imported_files);
                     let oldest_episode =
                         episodes.iter().filter_map(|episode| episode.added_at).min();
 
@@ -228,6 +240,25 @@ impl ArrClient {
             .collect::<Result<Vec<_>>>()?;
 
         Ok(Snapshot::Artists(artists))
+    }
+
+    /// Ids of the files an instance imported from a download, matched by file
+    /// rather than by movie or episode so that an import of a since-replaced
+    /// file cannot hide the current one from the probe.
+    async fn imported_files(
+        &self,
+        instance: &Instance,
+        path: &str,
+        query: &[(&str, &str)],
+    ) -> Result<HashSet<i64>> {
+        if !self.import_history {
+            return Ok(HashSet::new());
+        }
+        let records: Vec<ImportRecord> = self.get(instance, path, query).await?;
+        Ok(records
+            .into_iter()
+            .filter_map(|record| record.data.file_id?.parse().ok())
+            .collect())
     }
 
     async fn get<T>(&self, instance: &Instance, path: &str, query: &[(&str, &str)]) -> Result<T>
@@ -298,10 +329,9 @@ fn non_negative(value: i64) -> i64 {
 /// Maps Sonarr episodes to snapshots, excluding specials and deduplicating on
 /// (season, episode) so pathological Sonarr data cannot violate the storage
 /// primary key. Unaired episodes are kept; the UI renders them distinctly.
-/// `imported` holds the episodes whose files Sonarr imported from a download.
 fn episode_snapshots(
     episodes: Vec<SonarrEpisode>,
-    imported: &HashSet<i64>,
+    imported_files: &HashSet<i64>,
 ) -> Vec<SeriesEpisodeSnapshot> {
     episodes
         .into_iter()
@@ -318,7 +348,9 @@ fn episode_snapshots(
                     has_file: episode.has_file,
                     size_on_disk_bytes: non_negative(file.size.unwrap_or(0)),
                     added_at: file.date_added,
-                    file_path: file.path.filter(|_| !imported.contains(&episode.id)),
+                    file_path: file
+                        .path
+                        .filter(|_| file.id.is_none_or(|id| !imported_files.contains(&id))),
                 },
             )
         })
@@ -338,8 +370,6 @@ fn normalize_musicbrainz_id(id: &str, entity: &str) -> Result<String> {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RadarrMovie {
-    /// Radarr's internal movie id, which its history records refer to.
-    id: i64,
     tmdb_id: i64,
     title: String,
     /// Slug Radarr's web UI routes on (`/movie/{titleSlug}`, e.g.
@@ -363,18 +393,12 @@ struct RadarrMovie {
 #[derive(Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RadarrMovieFile {
+    /// What import history's `data.fileId` refers to.
+    id: Option<i64>,
     /// When Radarr imported the file, which predates `added` whenever a movie
     /// was removed from the library and re-added over existing files.
     date_added: Option<DateTime<Utc>>,
     path: Option<String>,
-}
-
-/// A `downloadFolderImported` history record: Radarr imported a downloaded
-/// file for this movie.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RadarrImport {
-    movie_id: i64,
 }
 
 #[derive(Default, Deserialize)]
@@ -427,8 +451,6 @@ struct SonarrStatistics {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SonarrEpisode {
-    /// Sonarr's internal episode id, which its history records refer to.
-    id: i64,
     season_number: i64,
     episode_number: i64,
     #[serde(default)]
@@ -442,6 +464,8 @@ struct SonarrEpisode {
 #[derive(Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SonarrEpisodeFile {
+    /// What import history's `data.fileId` refers to.
+    id: Option<i64>,
     size: Option<i64>,
     /// When Sonarr imported the file. Embedded in the episode response because
     /// the request already asks for `includeEpisodeFile`.
@@ -449,12 +473,18 @@ struct SonarrEpisodeFile {
     path: Option<String>,
 }
 
-/// A `downloadFolderImported` history record: Sonarr imported a downloaded
-/// file for this episode.
+/// A `downloadFolderImported` history record. Sonarr and Radarr both name the
+/// file they imported in `data.fileId`, as a string.
 #[derive(Deserialize)]
+struct ImportRecord {
+    #[serde(default)]
+    data: ImportData,
+}
+
+#[derive(Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct SonarrImport {
-    episode_id: i64,
+struct ImportData {
+    file_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -520,17 +550,6 @@ mod tests {
         }
     }
 
-    /// Answers an *arr history endpoint with no import records, so every file
-    /// stays visible to the filesystem probe.
-    async fn mount_no_imports(server: &MockServer, history_path: &str) {
-        Mock::given(method("GET"))
-            .and(path(history_path))
-            .and(query_param("eventType", "3"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
-            .mount(server)
-            .await;
-    }
-
     #[tokio::test]
     async fn collects_radarr_movies_from_a_base_path() {
         let server = MockServer::start().await;
@@ -538,37 +557,15 @@ mod tests {
             .and(path("/radarr/api/v3/movie"))
             .and(query_param("excludeLocalCovers", "true"))
             .and(header("X-Api-Key", "secret"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
-                {
-                    "id": 1,
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!([{
                     "tmdbId": 42,
                     "title": "Movie",
                     "titleSlug": "movie-42",
                     "year": 2024,
                     "added": "2024-03-15T10:00:00Z",
-                    "movieFile": {"dateAdded": "2021-07-04T08:00:00Z", "path": "/movies/Movie.mkv"},
+                    "movieFile": {"dateAdded": "2021-07-04T08:00:00Z"},
                     "statistics": {"movieFileCount": 2, "sizeOnDisk": 1234}
-                },
-                {
-                    "id": 2,
-                    "tmdbId": 43,
-                    "title": "Downloaded",
-                    "added": "2026-09-07T14:52:05Z",
-                    "movieFile": {"dateAdded": "2026-09-07T14:54:08Z", "path": "/movies/Downloaded.mkv"}
-                }
-            ])))
-            .mount(&server)
-            .await;
-        Mock::given(method("GET"))
-            .and(path("/radarr/api/v3/history/since"))
-            .and(query_param("date", "1970-01-01T00:00:00Z"))
-            .and(query_param("eventType", "3"))
-            .and(header("X-Api-Key", "secret"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(serde_json::json!([{
-                    "movieId": 2,
-                    "eventType": "downloadFolderImported",
-                    "date": "2026-09-07T14:54:53Z"
                 }])),
             )
             .mount(&server)
@@ -591,13 +588,6 @@ mod tests {
         assert_eq!(
             movies[0].added_at.map(|added| added.to_rfc3339()),
             Some("2021-07-04T08:00:00+00:00".to_owned())
-        );
-        // Only the file Radarr has no import record for is left to the probe.
-        assert_eq!(movies[0].file_path.as_deref(), Some("/movies/Movie.mkv"));
-        assert_eq!(movies[1].file_path, None);
-        assert_eq!(
-            movies[1].added_at.map(|added| added.to_rfc3339()),
-            Some("2026-09-07T14:52:05+00:00".to_owned())
         );
     }
 
@@ -632,7 +622,6 @@ mod tests {
             .and(header("X-Api-Key", "secret"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
                 {
-                    "id": 100,
                     "seasonNumber": 0,
                     "episodeNumber": 1,
                     "title": "Special",
@@ -640,7 +629,6 @@ mod tests {
                     "episodeFile": {"size": 100, "dateAdded": "2015-01-01T00:00:00Z"}
                 },
                 {
-                    "id": 102,
                     "seasonNumber": 1,
                     "episodeNumber": 2,
                     "title": "Aired, missing",
@@ -648,7 +636,6 @@ mod tests {
                     "hasFile": false
                 },
                 {
-                    "id": 101,
                     "seasonNumber": 1,
                     "episodeNumber": 1,
                     "title": "On disk",
@@ -657,7 +644,6 @@ mod tests {
                     "episodeFile": {"size": 512, "dateAdded": "2021-02-03T00:00:00Z"}
                 },
                 {
-                    "id": 201,
                     "seasonNumber": 2,
                     "episodeNumber": 1,
                     "title": "",
@@ -666,7 +652,6 @@ mod tests {
             ])))
             .mount(&server)
             .await;
-        mount_no_imports(&server, "/api/v3/history/series").await;
 
         let snapshot = ArrClient::new()
             .expect("client")
@@ -733,7 +718,6 @@ mod tests {
             .and(path("/api/v3/episode"))
             .respond_with(
                 ResponseTemplate::new(200).set_body_json(serde_json::json!([{
-                    "id": 101,
                     "seasonNumber": 1,
                     "episodeNumber": 1,
                     "title": "Unaired",
@@ -742,7 +726,6 @@ mod tests {
             )
             .mount(&server)
             .await;
-        mount_no_imports(&server, "/api/v3/history/series").await;
 
         let snapshot = ArrClient::new()
             .expect("client")
@@ -754,80 +737,6 @@ mod tests {
             panic!("expected series");
         };
         assert_eq!(series[0].added_at, None);
-    }
-
-    #[tokio::test]
-    async fn withholds_imported_episode_files_from_the_probe() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/api/v3/series"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(serde_json::json!([{
-                    "id": 9,
-                    "tvdbId": 7,
-                    "title": "Series",
-                    "added": "2026-06-27T03:34:44Z"
-                }])),
-            )
-            .mount(&server)
-            .await;
-        Mock::given(method("GET"))
-            .and(path("/api/v3/episode"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
-                {
-                    "id": 101,
-                    "seasonNumber": 1,
-                    "episodeNumber": 1,
-                    "title": "On disk before Sonarr",
-                    "hasFile": true,
-                    "episodeFile": {"dateAdded": "2026-06-27T03:40:00Z", "path": "/tv/Series/s01e01.mkv"}
-                },
-                {
-                    "id": 102,
-                    "seasonNumber": 1,
-                    "episodeNumber": 2,
-                    "title": "Downloaded by Sonarr",
-                    "hasFile": true,
-                    "episodeFile": {"dateAdded": "2026-09-25T01:03:38Z", "path": "/tv/Series/s01e02.mkv"}
-                }
-            ])))
-            .mount(&server)
-            .await;
-        Mock::given(method("GET"))
-            .and(path("/api/v3/history/series"))
-            .and(query_param("seriesId", "9"))
-            .and(query_param("eventType", "3"))
-            .and(header("X-Api-Key", "secret"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(serde_json::json!([{
-                    "episodeId": 102,
-                    "eventType": "downloadFolderImported",
-                    "date": "2026-09-25T01:03:38Z"
-                }])),
-            )
-            .mount(&server)
-            .await;
-
-        let snapshot = ArrClient::new()
-            .expect("client")
-            .collect(&instance(&server, InstanceKind::Sonarr, ""))
-            .await
-            .expect("snapshot");
-
-        let Snapshot::Series(series) = snapshot else {
-            panic!("expected series");
-        };
-        let episodes = &series[0].episodes;
-        assert_eq!(
-            episodes[0].file_path.as_deref(),
-            Some("/tv/Series/s01e01.mkv")
-        );
-        assert_eq!(episodes[1].file_path, None);
-        // Withholding the path only keeps the probe away; Sonarr's own date stays.
-        assert_eq!(
-            episodes[1].added_at.map(|added| added.to_rfc3339()),
-            Some("2026-09-25T01:03:38+00:00".to_owned())
-        );
     }
 
     #[tokio::test]
@@ -895,7 +804,6 @@ mod tests {
             .respond_with(ResponseTemplate::new(503))
             .mount(&server)
             .await;
-        mount_no_imports(&server, "/api/v3/history/since").await;
 
         let error = ArrClient::new()
             .expect("client")
@@ -910,7 +818,6 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_raw("not json", "application/json"))
             .mount(&server)
             .await;
-        mount_no_imports(&server, "/api/v3/history/since").await;
 
         let error = ArrClient::new()
             .expect("client")
@@ -935,7 +842,6 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        mount_no_imports(&server, "/api/v3/history/since").await;
 
         let error = ArrClient::new()
             .expect("client")
@@ -947,6 +853,163 @@ mod tests {
             error
                 .to_string()
                 .contains("redirected to auth.example.test")
+        );
+    }
+
+    #[tokio::test]
+    async fn requests_no_import_history_without_a_probe() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v3/movie"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!([{
+                    "tmdbId": 42,
+                    "title": "Movie",
+                    "movieFile": {"id": 12, "path": "/movies/Movie.mkv"}
+                }])),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v3/history/since"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let snapshot = ArrClient::new()
+            .expect("client")
+            .collect(&instance(&server, InstanceKind::Radarr, ""))
+            .await
+            .expect("snapshot");
+
+        let Snapshot::Movies(movies) = snapshot else {
+            panic!("expected movies");
+        };
+        assert_eq!(movies[0].file_path.as_deref(), Some("/movies/Movie.mkv"));
+    }
+
+    #[tokio::test]
+    async fn withholds_radarr_files_imported_from_a_download() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v3/movie"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {
+                    "tmdbId": 1,
+                    "title": "Replaced outside Radarr",
+                    "movieFile": {"id": 11, "path": "/movies/Replaced.mkv"}
+                },
+                {
+                    "tmdbId": 2,
+                    "title": "Downloaded",
+                    "added": "2026-09-07T14:52:05Z",
+                    "movieFile": {"id": 12, "dateAdded": "2026-09-07T14:54:08Z", "path": "/movies/Downloaded.mkv"}
+                }
+            ])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v3/history/since"))
+            .and(query_param("date", "1970-01-01T00:00:00Z"))
+            .and(query_param("eventType", "3"))
+            .and(header("X-Api-Key", "secret"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"movieId": 1, "eventType": "downloadFolderImported", "data": {"fileId": "10"}},
+                {"movieId": 2, "eventType": "downloadFolderImported", "data": {"fileId": "12"}}
+            ])))
+            .mount(&server)
+            .await;
+
+        let snapshot = ArrClient::new()
+            .expect("client")
+            .with_import_history()
+            .collect(&instance(&server, InstanceKind::Radarr, ""))
+            .await
+            .expect("snapshot");
+
+        let Snapshot::Movies(movies) = snapshot else {
+            panic!("expected movies");
+        };
+        // The import was of an earlier file, so the current one is still probed.
+        assert_eq!(movies[0].file_path.as_deref(), Some("/movies/Replaced.mkv"));
+        assert_eq!(movies[1].file_path, None);
+        // Withholding the path only keeps the probe away; Radarr's dates stay.
+        assert_eq!(
+            movies[1].added_at.map(|added| added.to_rfc3339()),
+            Some("2026-09-07T14:52:05+00:00".to_owned())
+        );
+    }
+
+    #[tokio::test]
+    async fn withholds_sonarr_files_imported_from_a_download() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v3/series"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!([{
+                    "id": 9,
+                    "tvdbId": 7,
+                    "title": "Series",
+                    "added": "2026-06-27T03:34:44Z"
+                }])),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v3/episode"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {
+                    "seasonNumber": 1,
+                    "episodeNumber": 1,
+                    "title": "On disk before Sonarr",
+                    "hasFile": true,
+                    "episodeFile": {"id": 21, "path": "/tv/Series/s01e01.mkv"}
+                },
+                {
+                    "seasonNumber": 1,
+                    "episodeNumber": 2,
+                    "title": "Downloaded by Sonarr",
+                    "hasFile": true,
+                    "episodeFile": {"id": 22, "dateAdded": "2026-09-25T01:03:38Z", "path": "/tv/Series/s01e02.mkv"}
+                }
+            ])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v3/history/series"))
+            .and(query_param("seriesId", "9"))
+            .and(query_param("eventType", "3"))
+            .and(header("X-Api-Key", "secret"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!([{
+                    "episodeId": 102,
+                    "eventType": "downloadFolderImported",
+                    "data": {"fileId": "22"}
+                }])),
+            )
+            .mount(&server)
+            .await;
+
+        let snapshot = ArrClient::new()
+            .expect("client")
+            .with_import_history()
+            .collect(&instance(&server, InstanceKind::Sonarr, ""))
+            .await
+            .expect("snapshot");
+
+        let Snapshot::Series(series) = snapshot else {
+            panic!("expected series");
+        };
+        let episodes = &series[0].episodes;
+        assert_eq!(
+            episodes[0].file_path.as_deref(),
+            Some("/tv/Series/s01e01.mkv")
+        );
+        assert_eq!(episodes[1].file_path, None);
+        assert_eq!(
+            episodes[1].added_at.map(|added| added.to_rfc3339()),
+            Some("2026-09-25T01:03:38+00:00".to_owned())
         );
     }
 }
