@@ -2,6 +2,13 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [0.12.1](https://github.com/gnarr/unpopularr/compare/6de12c29cd0aeaab71439edb51c5f2979cf1a563..0.12.1) - 2026-10-15
+#### Bug Fixes
+- (**collection**) match imports by file, fetch history only with the probe - ([1b19500](https://github.com/gnarr/unpopularr/commit/1b1950037b4b7ac673c9eca7043e5ef65209c86e)) - Gunnar Cortes
+- (**collection**) skip imported files in media probe - ([6de12c2](https://github.com/gnarr/unpopularr/commit/6de12c29cd0aeaab71439edb51c5f2979cf1a563)) - Gunnar Cortes
+
+- - -
+
 ## [0.12.0](https://github.com/gnarr/unpopularr/compare/8cd333455f559361715e997307b930e5be6a86f5..0.12.0) - 2026-10-14
 #### Features
 - (**catalog**) add reclaim scoring - ([8cd3334](https://github.com/gnarr/unpopularr/commit/8cd333455f559361715e997307b930e5be6a86f5)) - Gunnar Cortes
